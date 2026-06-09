@@ -470,6 +470,106 @@ components:
         prompt_eval_count:
           type: integer
           description: Number of input tokens processed to generate embeddings
+    MultiVectorRequest:
+      type: object
+      required: [model, input]
+      properties:
+        model:
+          type: string
+          description: Model name
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: Text or array of texts to generate multivector embeddings for
+        truncate:
+          type: boolean
+          default: true
+          description: If true, truncate inputs that exceed the context window. If false, returns an error.
+        input_type:
+          type: string
+          enum: ["", query, document]
+          description: Optional role hint. Validated but does not rewrite the input.
+        include_tokens:
+          type: boolean
+          default: false
+          description: Include the input token ids for each item
+        encoding_format:
+          type: string
+          enum: ["", float, base64]
+          description: float (default) returns vectors; base64 returns row-major little-endian float32 bytes
+        keep_alive:
+          type: string
+          description: Model keep-alive duration
+        options:
+          $ref: "#/components/schemas/ModelOptions"
+    MultiVectorResponse:
+      type: object
+      properties:
+        model:
+          type: string
+          description: Model that produced the embeddings
+        embedding_type:
+          type: string
+          description: Always "multi_vector"
+        pooling:
+          type: string
+          description: Always "none"
+        similarity:
+          type: object
+          properties:
+            comparator:
+              type: string
+            metric:
+              type: string
+            normalization:
+              type: string
+          description: How the encodings are meant to be compared (late interaction)
+        dimension:
+          type: integer
+          description: Width of each token row, 0 when there are no rows
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+                description: Position of this item in the input
+              shape:
+                type: array
+                items:
+                  type: integer
+                description: Always [rows, dim]
+              vectors:
+                type: array
+                items:
+                  type: array
+                  items:
+                    type: number
+                description: Token rows, present for the "" and "float" encodings
+              data:
+                type: string
+                description: Base64 of the row-major little-endian float32 matrix, present for the "base64" encoding
+              tokens:
+                type: array
+                items:
+                  type: integer
+                description: Input token ids, present when include_tokens is set
+              truncated:
+                type: boolean
+                description: Whether the input was truncated to fit the context
+        total_duration:
+          type: integer
+          description: Total time spent generating in nanoseconds
+        load_duration:
+          type: integer
+          description: Load time in nanoseconds
+        prompt_eval_count:
+          type: integer
+          description: Number of input tokens processed
     CreateRequest:
       type: object
       required: [model]
@@ -1127,6 +1227,81 @@ paths:
                 total_duration: 14143917
                 load_duration: 1019500
                 prompt_eval_count: 8
+  /api/multivectors:
+    post:
+      summary: Generate multivector embeddings
+      description: Creates per-token (ColBERT / late-interaction) embeddings for pooling=none models. Returns one matrix per input rather than one dense vector.
+      operationId: multivectors
+      x-mint:
+        href: /api/multivectors
+      x-codeSamples:
+        - lang: bash
+          label: Default
+          source: |
+            curl http://localhost:11434/api/multivectors -d '{
+              "model": "colbert",
+              "input": "Why is the sky blue?"
+            }'
+        - lang: bash
+          label: Multiple inputs
+          source: |
+            curl http://localhost:11434/api/multivectors -d '{
+              "model": "colbert",
+              "input": [
+                "Why is the sky blue?",
+                "Why is the grass green?"
+              ]
+            }'
+        - lang: bash
+          label: Include tokens
+          source: |
+            curl http://localhost:11434/api/multivectors -d '{
+              "model": "colbert",
+              "input": "Why is the sky blue?",
+              "include_tokens": true
+            }'
+        - lang: bash
+          label: Base64 encoding
+          source: |
+            curl http://localhost:11434/api/multivectors -d '{
+              "model": "colbert",
+              "input": "Why is the sky blue?",
+              "encoding_format": "base64"
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MultiVectorRequest"
+            example:
+              model: colbert
+              input: "Why is the sky blue?"
+      responses:
+        "200":
+          description: Multivector embeddings for the input text
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultiVectorResponse"
+              example:
+                model: "colbert"
+                embedding_type: "multi_vector"
+                pooling: "none"
+                similarity:
+                  comparator: "max_sim"
+                  metric: "dot"
+                  normalization: "model_or_raw"
+                dimension: 128
+                data:
+                  - index: 0
+                    shape: [6, 128]
+                    vectors:
+                      - [0.0123, -0.0456, 0.0789]
+                      - [0.0234, -0.0567, 0.0890]
+                total_duration: 14143917
+                load_duration: 1019500
+                prompt_eval_count: 6
   /api/tags:
     get:
       summary: List models

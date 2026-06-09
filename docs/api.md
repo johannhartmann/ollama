@@ -14,6 +14,7 @@
 - [Pull a Model](#pull-a-model)
 - [Push a Model](#push-a-model)
 - [Generate Embeddings](#generate-embeddings)
+- [Generate Multivector Embeddings](#generate-multivector-embeddings)
 - [List Running Models](#list-running-models)
 - [Version](#version)
 - [Experimental: Image Generation](#image-generation-experimental)
@@ -1767,6 +1768,145 @@ curl http://localhost:11434/api/embed -d '{
   ]
 }
 ```
+
+## Generate Multivector Embeddings
+
+```
+POST /api/multivectors
+```
+
+Generate multivector (late-interaction) embeddings from a model. This endpoint
+targets ColBERT / ModernColBERT models, which are converted with
+`pooling_type=none` and therefore emit one embedding row **per token** instead of
+a single pooled vector.
+
+Where [`/api/embed`](#generate-embeddings) returns one dense vector per input,
+`/api/multivectors` returns one variable-length **matrix** per input. Ollama
+serves the encodings verbatim — it does not normalize the rows, crop dimensions,
+or drop tokens. Late interaction (MaxSim) is performed downstream, e.g. by a
+vector database.
+
+This endpoint is local-only and requires a multivector model. Dense models are
+rejected; conversely, `/api/embed`, `/api/embeddings`, and `/v1/embeddings`
+reject multivector models with an error directing you here.
+
+### Parameters
+
+- `model`: name of model to generate embeddings from
+- `input`: text or list of text to generate embeddings for
+
+Advanced parameters:
+
+- `truncate`: truncates the end of each input to fit within context length. Returns error if `false` and context length is exceeded. Defaults to `true`
+- `input_type`: optional hint, one of `query` or `document`. Validated but does not rewrite the input; supply any required prefixes yourself.
+- `include_tokens`: include the input token ids for each item. Defaults to `false`
+- `encoding_format`: `float` (default) returns the rows in `vectors`; `base64` returns them packed as base64 of row-major little-endian float32 bytes in `data`
+- `options`: additional model parameters listed in the documentation for the [Modelfile](./modelfile.mdx#valid-parameters-and-values)
+- `keep_alive`: controls how long the model will stay loaded into memory following the request (default: `5m`)
+
+The response always includes a `shape` of `[rows, dim]` for each item. `dimension`
+is the row width. `similarity` advertises how to compare the encodings
+(`max_sim` over the `dot` metric).
+
+> [!NOTE]
+> `include_token_text` is not yet implemented and is rejected if set.
+
+### Examples
+
+#### Request (single input)
+
+```shell
+curl http://localhost:11434/api/multivectors -d '{
+  "model": "colbert",
+  "input": "Why is the sky blue?"
+}'
+```
+
+#### Response
+
+```json
+{
+  "model": "colbert",
+  "embedding_type": "multi_vector",
+  "pooling": "none",
+  "similarity": { "comparator": "max_sim", "metric": "dot", "normalization": "model_or_raw" },
+  "dimension": 128,
+  "data": [
+    {
+      "index": 0,
+      "shape": [6, 128],
+      "vectors": [
+        [0.0123, -0.0456, 0.0789],
+        [0.0234, -0.0567, 0.0890]
+      ]
+    }
+  ],
+  "total_duration": 14143917,
+  "load_duration": 1019500,
+  "prompt_eval_count": 6
+}
+```
+
+#### Request (multiple inputs)
+
+```shell
+curl http://localhost:11434/api/multivectors -d '{
+  "model": "colbert",
+  "input": ["Why is the sky blue?", "Why is the grass green?"]
+}'
+```
+
+Each item in `data` carries its own `shape`; row counts differ per input.
+
+#### Request (with token ids)
+
+```shell
+curl http://localhost:11434/api/multivectors -d '{
+  "model": "colbert",
+  "input": "Why is the sky blue?",
+  "include_tokens": true
+}'
+```
+
+Each `data` item additionally includes a `tokens` array of input token ids.
+
+#### Request (base64 encoding)
+
+```shell
+curl http://localhost:11434/api/multivectors -d '{
+  "model": "colbert",
+  "input": "Why is the sky blue?",
+  "encoding_format": "base64"
+}'
+```
+
+#### Response (base64 encoding)
+
+With `encoding_format=base64`, each item omits `vectors` and instead carries
+`data`, the base64 of the row-major little-endian float32 matrix. `shape` is
+still present, so the matrix can be reconstructed.
+
+```json
+{
+  "model": "colbert",
+  "embedding_type": "multi_vector",
+  "pooling": "none",
+  "similarity": { "comparator": "max_sim", "metric": "dot", "normalization": "model_or_raw" },
+  "dimension": 128,
+  "data": [
+    {
+      "index": 0,
+      "shape": [6, 128],
+      "data": "j8L1PQrXIz4..."
+    }
+  ]
+}
+```
+
+> [!IMPORTANT]
+> Do not use `/v1/embeddings` (the OpenAI-compatible endpoint) for ColBERT
+> models — OpenAI embedding clients expect a single dense vector per input and
+> cannot consume multivectors. Use `/api/multivectors` instead.
 
 ## List Running Models
 
