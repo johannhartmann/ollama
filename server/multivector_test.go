@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/base64"
+	"encoding/binary"
+	"math"
 	"testing"
 
 	"github.com/ollama/ollama/api"
@@ -133,6 +136,74 @@ func TestNormalizePoolingType(t *testing.T) {
 				t.Fatalf("got (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOk)
 			}
 		})
+	}
+}
+
+func TestEncodeFloat32MatrixBase64(t *testing.T) {
+	t.Run("2x2 byte length and round trip", func(t *testing.T) {
+		matrix := [][]float32{{1.5, -2.25}, {0, 3.5}}
+		encoded, err := encodeFloat32MatrixBase64(matrix)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		raw, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(raw) != 2*2*4 {
+			t.Fatalf("decoded byte length = %d, want 16", len(raw))
+		}
+
+		var got []float32
+		for i := 0; i < len(raw); i += 4 {
+			got = append(got, math.Float32frombits(binary.LittleEndian.Uint32(raw[i:i+4])))
+		}
+		want := []float32{1.5, -2.25, 0, 3.5}
+		for i := range want {
+			if got[i] != want[i] {
+				t.Fatalf("decoded[%d] = %v, want %v", i, got[i], want[i])
+			}
+		}
+	})
+
+	t.Run("empty matrix", func(t *testing.T) {
+		encoded, err := encodeFloat32MatrixBase64(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if encoded != "" {
+			t.Fatalf("expected empty string, got %q", encoded)
+		}
+	})
+
+	t.Run("ragged matrix", func(t *testing.T) {
+		if _, err := encodeFloat32MatrixBase64([][]float32{{1, 2}, {3}}); err == nil {
+			t.Fatal("expected error for ragged matrix")
+		}
+	})
+}
+
+func TestNewMultiVectorDataEncoding(t *testing.T) {
+	matrix := [][]float32{{1, 2, 3}}
+
+	float, err := newMultiVectorData(0, matrix, nil, false, "float")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if float.Data != "" || len(float.Vectors) != 1 {
+		t.Fatalf("float encoding should return vectors and no data: %+v", float)
+	}
+
+	b64, err := newMultiVectorData(0, matrix, nil, false, "base64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b64.Data == "" || b64.Vectors != nil {
+		t.Fatalf("base64 encoding should return data and no vectors: %+v", b64)
+	}
+	if want := []int{1, 3}; b64.Shape[0] != want[0] || b64.Shape[1] != want[1] {
+		t.Fatalf("base64 shape = %v, want %v", b64.Shape, want)
 	}
 }
 

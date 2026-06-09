@@ -60,7 +60,6 @@ func TestMultiVectorHandlerValidationErrors(t *testing.T) {
 		{name: "invalid input type", req: api.MultiVectorRequest{Model: "colbert", Input: []any{"ok", 5}}},
 		{name: "bad input_type", req: api.MultiVectorRequest{Model: "colbert", Input: "hi", InputType: "passage"}},
 		{name: "include_token_text", req: api.MultiVectorRequest{Model: "colbert", Input: "hi", IncludeTokenText: true}},
-		{name: "base64 not yet", req: api.MultiVectorRequest{Model: "colbert", Input: "hi", EncodingFormat: "base64"}},
 	}
 
 	for _, tc := range cases {
@@ -142,6 +141,46 @@ func TestMultiVectorHandlerTwoInputs(t *testing.T) {
 	}
 	if resp.Data[0].Data != "" || resp.Data[1].Data != "" {
 		t.Fatal("expected no base64 data field for float encoding")
+	}
+}
+
+func TestMultiVectorHandlerBase64(t *testing.T) {
+	t.Setenv("OLLAMA_CONTEXT_LENGTH", "2048")
+	gin.SetMode(gin.TestMode)
+
+	mock := mockRunner{
+		MultiVectorFn: func(_ context.Context, _ string, _ llm.MultiVectorOptions) (llm.MultiVectorResult, int, error) {
+			return llm.MultiVectorResult{Vectors: [][]float32{{1, 2}, {3, 4}}, Dimension: 2}, 0, nil
+		},
+	}
+	s := newServerWithMockRunner(t, &mock)
+	createMinimalGGUFModel(t, s, "colbert", multivectorKV(), "", nil)
+
+	w := createRequest(t, s.MultiVectorHandler, api.MultiVectorRequest{
+		Model:          "colbert",
+		Input:          "hello",
+		EncodingFormat: "base64",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp api.MultiVectorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected 1 data item, got %d", len(resp.Data))
+	}
+	item := resp.Data[0]
+	if item.Data == "" {
+		t.Fatal("expected base64 data field")
+	}
+	if item.Vectors != nil {
+		t.Fatal("expected no vectors field for base64 encoding")
+	}
+	if !reflect.DeepEqual(item.Shape, []int{2, 2}) {
+		t.Fatalf("shape = %v, want [2 2]", item.Shape)
 	}
 }
 

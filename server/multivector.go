@@ -1,9 +1,12 @@
 package server
 
 import (
+	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
@@ -177,9 +180,34 @@ var multiVectorSimilarity = api.MultiVectorSimilarity{
 	Normalization: "model_or_raw",
 }
 
+// encodeFloat32MatrixBase64 encodes a token-row matrix as base64 of its
+// row-major, little-endian float32 bytes. A ragged matrix is an error; an empty
+// matrix encodes to the empty string.
+func encodeFloat32MatrixBase64(vectors [][]float32) (string, error) {
+	if _, _, err := validateMultiVectorMatrix(vectors); err != nil {
+		return "", err
+	}
+
+	var total int
+	for _, row := range vectors {
+		total += len(row) * 4
+	}
+
+	buf := make([]byte, 0, total)
+	var scratch [4]byte
+	for _, row := range vectors {
+		for _, v := range row {
+			binary.LittleEndian.PutUint32(scratch[:], math.Float32bits(v))
+			buf = append(buf, scratch[:]...)
+		}
+	}
+
+	return base64.StdEncoding.EncodeToString(buf), nil
+}
+
 // newMultiVectorData assembles the per-input response item, validating that the
-// token matrix is rectangular. Vectors are returned verbatim for the "" and
-// "float" encodings; base64 is handled in a later phase.
+// token matrix is rectangular. The "" and "float" encodings return the rows in
+// Vectors; "base64" returns them packed into Data instead. Shape is always set.
 func newMultiVectorData(index int, vectors [][]float32, tokens []int, truncated bool, encodingFormat string) (api.MultiVectorData, error) {
 	rows, dim, err := validateMultiVectorMatrix(vectors)
 	if err != nil {
@@ -192,7 +220,17 @@ func newMultiVectorData(index int, vectors [][]float32, tokens []int, truncated 
 		Tokens:    tokens,
 		Truncated: truncated,
 	}
-	item.Vectors = vectors
+
+	if encodingFormat == "base64" {
+		encoded, err := encodeFloat32MatrixBase64(vectors)
+		if err != nil {
+			return api.MultiVectorData{}, err
+		}
+		item.Data = encoded
+	} else {
+		item.Vectors = vectors
+	}
+
 	return item, nil
 }
 
@@ -219,10 +257,6 @@ func (s *Server) MultiVectorHandler(c *gin.Context) {
 	}
 	if req.IncludeTokenText {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "include_token_text is not implemented for multivectors"})
-		return
-	}
-	if req.EncodingFormat == "base64" {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "encoding_format \"base64\" is not yet implemented"})
 		return
 	}
 
