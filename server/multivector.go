@@ -3,9 +3,11 @@ package server
 import (
 	"encoding/base64"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"strconv"
@@ -169,6 +171,35 @@ func isPoolingNone(kv ggml.KV) bool {
 func isPoolingRank(kv ggml.KV) bool {
 	p, ok := ggufPoolingType(kv)
 	return ok && p == "rank"
+}
+
+// colbertProfile decodes an optional ColBERT profile embedded in the model's
+// GGUF metadata under "pg_colbert.profile_json". The raw string is already
+// surfaced verbatim through /api/show's model_info; this helper decodes it for
+// callers that want structured access (e.g. future query/document prefix
+// handling). It returns nil when the key is absent, empty, or not valid JSON —
+// a malformed profile must never block model use, so the error is only logged.
+//
+// Note: this does not rewrite input text. The MVP validates input_type but
+// leaves the input unchanged; callers supply any required query/document
+// prefixes themselves.
+func colbertProfile(kv ggml.KV) map[string]any {
+	raw, ok := kv["pg_colbert.profile_json"]
+	if !ok {
+		return nil
+	}
+
+	s, ok := raw.(string)
+	if !ok || s == "" {
+		return nil
+	}
+
+	var profile map[string]any
+	if err := json.Unmarshal([]byte(s), &profile); err != nil {
+		slog.Debug("ignoring malformed pg_colbert.profile_json", "error", err)
+		return nil
+	}
+	return profile
 }
 
 // multiVectorSimilarity describes how the returned encodings are meant to be

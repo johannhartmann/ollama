@@ -139,6 +139,46 @@ func TestNormalizePoolingType(t *testing.T) {
 	}
 }
 
+func TestColbertProfile(t *testing.T) {
+	t.Run("valid profile", func(t *testing.T) {
+		kv := ggml.KV{"pg_colbert.profile_json": `{"query_prefix":"[Q] ","dim":128}`}
+		profile := colbertProfile(kv)
+		if profile == nil {
+			t.Fatal("expected profile, got nil")
+		}
+		if profile["query_prefix"] != "[Q] " {
+			t.Fatalf("query_prefix = %v, want %q", profile["query_prefix"], "[Q] ")
+		}
+		if profile["dim"] != float64(128) {
+			t.Fatalf("dim = %v, want 128", profile["dim"])
+		}
+	})
+
+	t.Run("absent key", func(t *testing.T) {
+		if profile := colbertProfile(ggml.KV{"general.architecture": "bert"}); profile != nil {
+			t.Fatalf("expected nil, got %v", profile)
+		}
+	})
+
+	t.Run("empty value", func(t *testing.T) {
+		if profile := colbertProfile(ggml.KV{"pg_colbert.profile_json": ""}); profile != nil {
+			t.Fatalf("expected nil, got %v", profile)
+		}
+	})
+
+	t.Run("malformed json does not panic or fail", func(t *testing.T) {
+		if profile := colbertProfile(ggml.KV{"pg_colbert.profile_json": "{not valid"}); profile != nil {
+			t.Fatalf("expected nil for malformed json, got %v", profile)
+		}
+	})
+
+	t.Run("non-string value", func(t *testing.T) {
+		if profile := colbertProfile(ggml.KV{"pg_colbert.profile_json": uint32(5)}); profile != nil {
+			t.Fatalf("expected nil for non-string value, got %v", profile)
+		}
+	})
+}
+
 func TestEncodeFloat32MatrixBase64(t *testing.T) {
 	t.Run("2x2 byte length and round trip", func(t *testing.T) {
 		matrix := [][]float32{{1.5, -2.25}, {0, 3.5}}
