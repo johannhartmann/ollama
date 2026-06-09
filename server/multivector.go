@@ -3,11 +3,20 @@ package server
 import (
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/ollama/ollama/api"
 	"github.com/ollama/ollama/fs/ggml"
+	"github.com/ollama/ollama/llm"
+	"github.com/ollama/ollama/types/model"
 )
 
 // multivectorRedirectError is returned by the dense embedding endpoints when a
@@ -157,4 +166,225 @@ func isPoolingNone(kv ggml.KV) bool {
 func isPoolingRank(kv ggml.KV) bool {
 	p, ok := ggufPoolingType(kv)
 	return ok && p == "rank"
+}
+
+// multiVectorSimilarity describes how the returned encodings are meant to be
+// compared. Ollama serves the encodings; late interaction (MaxSim) is performed
+// downstream.
+var multiVectorSimilarity = api.MultiVectorSimilarity{
+	Comparator:    "max_sim",
+	Metric:        "dot",
+	Normalization: "model_or_raw",
+}
+
+// newMultiVectorData assembles the per-input response item, validating that the
+// token matrix is rectangular. Vectors are returned verbatim for the "" and
+// "float" encodings; base64 is handled in a later phase.
+func newMultiVectorData(index int, vectors [][]float32, tokens []int, truncated bool, encodingFormat string) (api.MultiVectorData, error) {
+	rows, dim, err := validateMultiVectorMatrix(vectors)
+	if err != nil {
+		return api.MultiVectorData{}, err
+	}
+
+	item := api.MultiVectorData{
+		Index:     index,
+		Shape:     []int{rows, dim},
+		Tokens:    tokens,
+		Truncated: truncated,
+	}
+	item.Vectors = vectors
+	return item, nil
+}
+
+// MultiVectorHandler serves POST /api/multivectors. It mirrors the safe parts of
+// EmbedHandler but preserves every token row: it never normalizes, never crops
+// dimensions, and never drops rows. It is local-only and requires a pooling=none
+// model.
+func (s *Server) MultiVectorHandler(c *gin.Context) {
+	checkpointStart := time.Now()
+
+	var req api.MultiVectorRequest
+	switch err := c.ShouldBindJSON(&req); {
+	case errors.Is(err, io.EOF):
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "missing request body"})
+		return
+	case err != nil:
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := validateMultiVectorRequest(req); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.IncludeTokenText {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "include_token_text is not implemented for multivectors"})
+		return
+	}
+	if req.EncodingFormat == "base64" {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "encoding_format \"base64\" is not yet implemented"})
+		return
+	}
+
+	modelRef, err := parseAndValidateModelRef(req.Model)
+	if err != nil {
+		writeModelRefParseError(c, err, http.StatusNotFound, fmt.Sprintf("model '%s' not found", req.Model))
+		return
+	}
+	if modelRef.Source == modelSourceCloud {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "multivector embeddings are only available for local models"})
+		return
+	}
+
+	input, err := parseEmbedLikeInput(req.Input)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	name, err := getExistingName(modelRef.Name)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("model '%s' not found", req.Model)})
+		return
+	}
+
+	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil)
+	if err != nil {
+		handleScheduleError(c, req.Model, err)
+		return
+	}
+
+	checkpointLoaded := time.Now()
+
+	if len(input) == 0 {
+		c.JSON(http.StatusOK, api.MultiVectorResponse{
+			Model:         req.Model,
+			EmbeddingType: "multi_vector",
+			Pooling:       "none",
+			Similarity:    multiVectorSimilarity,
+			Data:          []api.MultiVectorData{},
+		})
+		return
+	}
+
+	kvData, _, err := getModelData(m.ModelPath, false)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if !isPoolingNone(kvData) {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "model does not produce multivector embeddings"})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	adjustTokenLimit := func(tokens []int, limit int) int {
+		if bos := kvData.Uint("tokenizer.ggml.bos_token_id"); len(tokens) > 0 && tokens[0] != int(bos) && kvData.Bool("add_bos_token", true) {
+			limit--
+		}
+		if eos := kvData.Uint("tokenizer.ggml.eos_token_id"); len(tokens) > 0 && tokens[len(tokens)-1] != int(eos) && kvData.Bool("add_eos_token", true) {
+			limit--
+		}
+		return limit
+	}
+
+	// prepare tokenizes the input, applies the model context limit, and (unless
+	// truncation is disabled) trims the input to fit. It returns the text and
+	// token ids that will actually be embedded.
+	prepare := func(text string) (string, []int, bool, error) {
+		tokens, err := r.Tokenize(ctx, text)
+		if err != nil {
+			return "", nil, false, err
+		}
+
+		ctxLen := int(kvData.ContextLength())
+		if opts.NumCtx > 0 {
+			ctxLen = min(opts.NumCtx, ctxLen)
+		}
+		ctxLen = adjustTokenLimit(tokens, ctxLen)
+		if ctxLen <= 0 {
+			return "", nil, false, fmt.Errorf("input after truncation exceeds maximum context length")
+		}
+
+		if len(tokens) <= ctxLen {
+			return text, tokens, false, nil
+		}
+
+		if req.Truncate != nil && !*req.Truncate {
+			return "", nil, false, api.StatusError{
+				StatusCode:   http.StatusBadRequest,
+				ErrorMessage: "the input length exceeds the context length",
+			}
+		}
+
+		truncatedTokens := tokens[:ctxLen]
+		truncatedText, err := r.Detokenize(ctx, truncatedTokens)
+		if err != nil {
+			return "", nil, false, err
+		}
+		return truncatedText, truncatedTokens, true, nil
+	}
+
+	var g errgroup.Group
+	data := make([]api.MultiVectorData, len(input))
+	var totalTokens uint64
+	for i, text := range input {
+		g.Go(func() error {
+			finalText, tokens, truncated, err := prepare(text)
+			if err != nil {
+				return err
+			}
+
+			result, _, err := r.MultiVector(ctx, finalText, llm.MultiVectorOptions{})
+			if err != nil {
+				return err
+			}
+
+			var reportTokens []int
+			if req.IncludeTokens {
+				reportTokens = tokens
+			}
+
+			item, err := newMultiVectorData(i, result.Vectors, reportTokens, truncated, req.EncodingFormat)
+			if err != nil {
+				return err
+			}
+
+			data[i] = item
+			atomic.AddUint64(&totalTokens, uint64(len(tokens)))
+			return nil
+		})
+	}
+
+	if err := g.Wait(); err != nil {
+		s.sched.expireRunnersForRuntimeOOM(m, err)
+		var serr api.StatusError
+		if errors.As(err, &serr) {
+			c.AbortWithStatusJSON(serr.StatusCode, gin.H{"error": strings.TrimSpace(serr.ErrorMessage)})
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": strings.TrimSpace(err.Error())})
+		return
+	}
+
+	dimension := 0
+	for _, d := range data {
+		if len(d.Shape) == 2 && d.Shape[0] > 0 {
+			dimension = d.Shape[1]
+			break
+		}
+	}
+
+	c.JSON(http.StatusOK, api.MultiVectorResponse{
+		Model:           req.Model,
+		EmbeddingType:   "multi_vector",
+		Pooling:         "none",
+		Similarity:      multiVectorSimilarity,
+		Dimension:       dimension,
+		Data:            data,
+		TotalDuration:   time.Since(checkpointStart),
+		LoadDuration:    checkpointLoaded.Sub(checkpointStart),
+		PromptEvalCount: int(totalTokens),
+	})
 }

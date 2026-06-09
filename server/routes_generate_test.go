@@ -62,6 +62,7 @@ type mockRunner struct {
 	ChatFn        func(context.Context, llm.ChatRequest, func(llm.ChatResponse)) error
 	Template      string
 	TemplateFn    func(context.Context, llm.ChatRequest) (string, error)
+	MultiVectorFn func(context.Context, string, llm.MultiVectorOptions) (llm.MultiVectorResult, int, error)
 	contextLength int
 }
 
@@ -89,6 +90,13 @@ func (m *mockRunner) ApplyChatTemplate(ctx context.Context, r llm.ChatRequest) (
 		return m.TemplateFn(ctx, r)
 	}
 	return m.Template, nil
+}
+
+func (m *mockRunner) MultiVector(ctx context.Context, input string, opts llm.MultiVectorOptions) (llm.MultiVectorResult, int, error) {
+	if m.MultiVectorFn != nil {
+		return m.MultiVectorFn(ctx, input, opts)
+	}
+	return llm.MultiVectorResult{}, 0, nil
 }
 
 func (mockRunner) Tokenize(_ context.Context, s string) (tokens []int, err error) {
