@@ -2134,6 +2134,10 @@ func (s *mockLlm) Embedding(ctx context.Context, input string) ([]float32, int, 
 	return s.embeddingResp, 0, s.embeddingRespErr
 }
 
+func (s *mockLlm) MultiVector(ctx context.Context, input string, opts llm.MultiVectorOptions) (llm.MultiVectorResult, int, error) {
+	return llm.MultiVectorResult{}, 0, errors.New("not implemented")
+}
+
 func (s *mockLlm) Tokenize(ctx context.Context, content string) ([]int, error) {
 	return s.tokenizeResp, s.tokenizeRespErr
 }

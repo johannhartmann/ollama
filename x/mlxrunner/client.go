@@ -233,6 +233,11 @@ func (c *Client) Embedding(ctx context.Context, input string) ([]float32, int, e
 	return nil, 0, errors.New("not supported")
 }
 
+// MultiVector implements llm.LlamaServer.
+func (c *Client) MultiVector(ctx context.Context, input string, opts llm.MultiVectorOptions) (llm.MultiVectorResult, int, error) {
+	return llm.MultiVectorResult{}, 0, errors.New("not supported")
+}
+
 // GetDeviceInfos implements llm.LlamaServer.
 func (c *Client) GetDeviceInfos(ctx context.Context) []ml.DeviceInfo {
 	return nil
