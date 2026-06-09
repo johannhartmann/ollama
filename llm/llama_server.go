@@ -2249,118 +2249,15 @@ func (s *llamaServerRunner) Embedding(ctx context.Context, input string) ([]floa
 // cropping, so the vectors match what llama.cpp emits for the model's configured
 // pooling mode (which, for these models, must be none).
 func (s *llamaServerRunner) MultiVector(ctx context.Context, input string, _ MultiVectorOptions) (MultiVectorResult, int, error) {
-	if err := s.sem.Acquire(ctx, 1); err != nil {
-		return MultiVectorResult{}, 0, err
-	}
-	defer s.sem.Release(1)
-
-	status, err := s.getServerStatusRetry(ctx)
-	if err != nil {
-		return MultiVectorResult{}, 0, err
-	} else if status != ServerStatusReady {
-		return MultiVectorResult{}, 0, fmt.Errorf("unexpected server status: %s", status)
-	}
-
-	// The non-OAI /embeddings endpoint (driven by the "content" field) returns
-	// the array form [{"index": 0, "embedding": [[...], ...]}], which preserves
-	// per-token rows when the model uses pooling=none.
-	data, err := json.Marshal(map[string]any{"content": input})
-	if err != nil {
-		return MultiVectorResult{}, 0, fmt.Errorf("error marshaling multivector data: %w", err)
-	}
-
-	r, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/embeddings", s.port), bytes.NewBuffer(data))
-	if err != nil {
-		return MultiVectorResult{}, 0, fmt.Errorf("error creating multivector request: %w", err)
-	}
-	r.Header.Set("Content-Type", "application/json")
-
-	resp, err := s.httpClient().Do(r)
-	if err != nil {
-		return MultiVectorResult{}, 0, fmt.Errorf("do multivector request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return MultiVectorResult{}, 0, fmt.Errorf("error reading multivector response: %w", err)
-	}
-
-	if resp.StatusCode >= 400 {
-		statusCode, errMsg := normalizeEmbeddingError(resp.StatusCode, body)
-		return MultiVectorResult{}, 0, api.StatusError{StatusCode: statusCode, ErrorMessage: errMsg}
-	}
-
-	vectors, err := parseMultiVectorEmbeddings(body)
-	if err != nil {
-		return MultiVectorResult{}, 0, err
-	}
-
-	dim := 0
-	if len(vectors) > 0 {
-		dim = len(vectors[0])
-	}
-	// The non-OAI endpoint does not report tokens_evaluated; the caller derives
-	// the prompt token count from its own tokenization.
-	return MultiVectorResult{Vectors: vectors, Dimension: dim}, 0, nil
-}
-
-// parseMultiVectorEmbeddings decodes llama-server's non-OAI /embeddings array
-// response into a token-row matrix. It selects the object for input index 0
-// (without assuming it is first in the array), preserves all rows, and validates
-// that the matrix is rectangular. A flat (dense) embedding signals that the model
-// pooled its output rather than returning per-token rows.
-func parseMultiVectorEmbeddings(body []byte) ([][]float32, error) {
-	var results []struct {
-		Index     int             `json:"index"`
-		Embedding json.RawMessage `json:"embedding"`
-	}
-	if err := json.Unmarshal(body, &results); err != nil {
-		return nil, fmt.Errorf("unmarshal multivector response: %w", err)
-	}
-	if len(results) == 0 {
-		return nil, fmt.Errorf("empty multivector response")
-	}
-
-	raw := results[0].Embedding
-	found := false
-	for _, res := range results {
-		if res.Index == 0 {
-			raw = res.Embedding
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, fmt.Errorf("multivector response missing index 0")
-	}
-	if len(raw) == 0 {
-		return nil, fmt.Errorf("multivector response missing embedding")
-	}
-
-	var vectors [][]float32
-	if err := json.Unmarshal(raw, &vectors); err != nil {
-		// A flat array means the model returned a single pooled vector rather
-		// than per-token rows, i.e. pooling is not none.
-		var dense []float32
-		if errDense := json.Unmarshal(raw, &dense); errDense == nil {
-			return nil, fmt.Errorf("model did not return token embeddings (pooling is not none); use /api/embed")
-		}
-		return nil, fmt.Errorf("unmarshal multivector values: %w", err)
-	}
-
-	if len(vectors) == 0 {
-		return nil, fmt.Errorf("multivector response contained no token rows")
-	}
-
-	dim := len(vectors[0])
-	for i, row := range vectors {
-		if len(row) != dim {
-			return nil, fmt.Errorf("ragged multivector matrix: row %d has %d values, expected %d", i, len(row), dim)
-		}
-	}
-
-	return vectors, nil
+	// The previous implementation POSTed to llama-server's /embeddings endpoint
+	// and returned the raw per-token hidden states. That is the wrong tool for
+	// ColBERT: /embeddings cannot apply the token plan ([Q]/[D] markers, [MASK]
+	// query expansion), the 384->128 colbert.proj projection, L2 normalization,
+	// or the attend_to_expansion attention mask. Those require driving llama.cpp
+	// at the batch level (cf. pg_colbert's colbert_engine_llama.cpp). That native
+	// path replaces this passthrough; until it lands, fail loudly rather than
+	// return embeddings that do not match the reference.
+	return MultiVectorResult{}, 0, errors.New("multivector serving not implemented: native ColBERT path pending (the /embeddings passthrough was removed)")
 }
 
 func normalizeEmbeddingError(statusCode int, body []byte) (int, string) {
