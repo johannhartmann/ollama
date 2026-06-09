@@ -662,6 +662,105 @@ type EmbeddingResponse struct {
 	Embedding []float64 `json:"embedding"`
 }
 
+// MultiVectorRequest is the request passed to the /api/multivectors endpoint.
+//
+// Unlike [EmbedRequest], which returns one dense vector per input, this endpoint
+// returns one variable-length matrix per input. It targets late-interaction
+// models (ColBERT / ModernColBERT) that are converted with pooling_type=none and
+// therefore emit one embedding row per token.
+type MultiVectorRequest struct {
+	// Model is the model name.
+	Model string `json:"model"`
+
+	// Input is the input to embed. It may be a single string or a list of strings.
+	Input any `json:"input"`
+
+	// KeepAlive controls how long the model will stay loaded in memory following
+	// this request.
+	KeepAlive *Duration `json:"keep_alive,omitempty"`
+
+	// Truncate truncates the input to fit the model's max sequence length.
+	Truncate *bool `json:"truncate,omitempty"`
+
+	// Options lists model-specific options.
+	Options map[string]any `json:"options"`
+
+	// InputType is an optional hint describing the role of the input. One of
+	// "", "query", or "document". The MVP validates this value but does not
+	// rewrite the input text based on it.
+	InputType string `json:"input_type,omitempty"`
+
+	// IncludeTokens requests that the token ids for each input be returned
+	// alongside the vectors.
+	IncludeTokens bool `json:"include_tokens,omitempty"`
+
+	// IncludeTokenText requests the decoded text for each token. Not implemented
+	// in the MVP; setting it is rejected rather than silently faked.
+	IncludeTokenText bool `json:"include_token_text,omitempty"`
+
+	// EncodingFormat selects how vectors are encoded in the response. One of
+	// "", "float" (default), or "base64".
+	EncodingFormat string `json:"encoding_format,omitempty"`
+}
+
+// MultiVectorResponse is the response from the /api/multivectors endpoint.
+type MultiVectorResponse struct {
+	Model string `json:"model"`
+
+	// EmbeddingType is always "multi_vector".
+	EmbeddingType string `json:"embedding_type"`
+
+	// Pooling is always "none" for multivector models.
+	Pooling string `json:"pooling"`
+
+	// Similarity describes how callers should compare these encodings.
+	Similarity MultiVectorSimilarity `json:"similarity"`
+
+	// Dimension is the width of each token row. 0 when there are no rows.
+	Dimension int `json:"dimension"`
+
+	// Data holds one entry per input, ordered by input index.
+	Data []MultiVectorData `json:"data"`
+
+	TotalDuration   time.Duration `json:"total_duration,omitempty"`
+	LoadDuration    time.Duration `json:"load_duration,omitempty"`
+	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
+}
+
+// MultiVectorSimilarity advertises how the returned encodings are meant to be
+// compared by downstream systems (e.g. a vector database performing late
+// interaction).
+type MultiVectorSimilarity struct {
+	Comparator    string `json:"comparator"`
+	Metric        string `json:"metric"`
+	Normalization string `json:"normalization"`
+}
+
+// MultiVectorData is the per-input multivector result.
+type MultiVectorData struct {
+	// Index is the position of this item in the request input.
+	Index int `json:"index"`
+
+	// Shape is always [rows, dim].
+	Shape []int `json:"shape"`
+
+	// Vectors holds the token rows when EncodingFormat is "" or "float".
+	Vectors [][]float32 `json:"vectors,omitempty"`
+
+	// Data holds the base64-encoded, row-major little-endian float32 matrix when
+	// EncodingFormat is "base64".
+	Data string `json:"data,omitempty"`
+
+	// Tokens holds the input token ids when IncludeTokens is set.
+	Tokens []int `json:"tokens,omitempty"`
+
+	// TokenText holds decoded token text. Reserved for a future release.
+	TokenText []string `json:"token_text,omitempty"`
+
+	// Truncated reports whether the input text was truncated to fit the context.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
 // CreateRequest is the request passed to [Client.Create].
 type CreateRequest struct {
 	// Model is the model name to create.
