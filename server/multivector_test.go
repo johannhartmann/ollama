@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/fs/ggml"
 )
 
 func TestParseEmbedLikeInput(t *testing.T) {
@@ -100,6 +101,83 @@ func TestValidateMultiVectorMatrix(t *testing.T) {
 			}
 			if rows != tc.wantRows || dim != tc.wantDim {
 				t.Fatalf("got (rows=%d, dim=%d), want (rows=%d, dim=%d)", rows, dim, tc.wantRows, tc.wantDim)
+			}
+		})
+	}
+}
+
+func TestNormalizePoolingType(t *testing.T) {
+	cases := []struct {
+		name   string
+		value  any
+		want   string
+		wantOk bool
+	}{
+		{name: "uint32 none", value: uint32(0), want: "none", wantOk: true},
+		{name: "uint32 mean", value: uint32(1), want: "mean", wantOk: true},
+		{name: "int cls", value: 2, want: "cls", wantOk: true},
+		{name: "int64 last", value: int64(3), want: "last", wantOk: true},
+		{name: "float64 rank", value: float64(4), want: "rank", wantOk: true},
+		{name: "string name", value: "none", want: "none", wantOk: true},
+		{name: "string mixed case", value: "Mean", want: "mean", wantOk: true},
+		{name: "string numeric", value: "2", want: "cls", wantOk: true},
+		{name: "out of range", value: uint32(9), wantOk: false},
+		{name: "unknown string", value: "softmax", wantOk: false},
+		{name: "wrong type", value: []int{0}, wantOk: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := normalizePoolingType(tc.value)
+			if ok != tc.wantOk || (ok && got != tc.want) {
+				t.Fatalf("got (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOk)
+			}
+		})
+	}
+}
+
+func TestPoolingTypeFromKV(t *testing.T) {
+	cases := []struct {
+		name     string
+		kv       ggml.KV
+		wantType string
+		wantOk   bool
+		none     bool
+		rank     bool
+	}{
+		{
+			name:   "no pooling key",
+			kv:     ggml.KV{"general.architecture": "llama"},
+			wantOk: false,
+		},
+		{
+			name:     "pooling none",
+			kv:       ggml.KV{"general.architecture": "bert", "bert.pooling_type": uint32(0)},
+			wantType: "none", wantOk: true, none: true,
+		},
+		{
+			name:     "pooling mean",
+			kv:       ggml.KV{"general.architecture": "bert", "bert.pooling_type": uint32(1)},
+			wantType: "mean", wantOk: true,
+		},
+		{
+			name:     "pooling rank",
+			kv:       ggml.KV{"general.architecture": "bert", "bert.pooling_type": uint32(4)},
+			wantType: "rank", wantOk: true, rank: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ggufPoolingType(tc.kv)
+			if ok != tc.wantOk || (ok && got != tc.wantType) {
+				t.Fatalf("ggufPoolingType = (%q, %v), want (%q, %v)", got, ok, tc.wantType, tc.wantOk)
+			}
+			if isPoolingNone(tc.kv) != tc.none {
+				t.Fatalf("isPoolingNone = %v, want %v", isPoolingNone(tc.kv), tc.none)
+			}
+			if isPoolingRank(tc.kv) != tc.rank {
+				t.Fatalf("isPoolingRank = %v, want %v", isPoolingRank(tc.kv), tc.rank)
 			}
 		})
 	}

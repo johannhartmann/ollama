@@ -823,6 +823,11 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		return
 	}
 
+	if isPoolingNone(kvData) {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": multivectorRedirectError})
+		return
+	}
+
 	ctx := c.Request.Context()
 
 	adjustTokenLimit := func(tokens []int, limit int) int {
@@ -1025,6 +1030,14 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 	// an empty request loads the model
 	if req.Prompt == "" {
 		c.JSON(http.StatusOK, api.EmbeddingResponse{Embedding: []float64{}})
+		return
+	}
+
+	if kvData, _, err := getModelData(m.ModelPath, false); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	} else if isPoolingNone(kvData) {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": multivectorRedirectError})
 		return
 	}
 
