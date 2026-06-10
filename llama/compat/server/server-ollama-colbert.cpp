@@ -213,6 +213,16 @@ bool init_locked(const llama_model * model, std::string & err) {
         return false;
     }
 
+    // In-graph projection: when the GGUF carries the dense projection
+    // tensors (dense_2.* plus {arch}.embedding_length_out), the model already
+    // emits rows at the final ColBERT width and a sidecar is redundant —
+    // prefer the in-graph path and skip CPU projection entirely.
+    if (s.prof.declared_output_dim > 0 && s.n_embd == s.prof.declared_output_dim) {
+        s.has_projection = false;
+        s.out_dim = s.n_embd;
+        return true;
+    }
+
     const char * sidecar = std::getenv(PROJECTION_ENV);
     if (sidecar != nullptr && sidecar[0] != '\0') {
         if (!load_sidecar(sidecar, s.proj, err)) {

@@ -131,22 +131,38 @@ if len(rows) != len(orows):
     print(f"FAIL: row count mismatch (llama.cpp {len(rows)} vs ollama {len(orows)})", file=sys.stderr)
     sys.exit(1)
 
+# GGUFs exported with the projection embedded (dense_2.* tensors) already
+# return final-width rows from raw /embeddings: only normalization is left.
+# Backbone-only GGUFs return raw rows that still need the sidecar projection.
+raw_dim = len(rows[0]) if rows else 0
+out_dim = len(orows[0]) if orows else 0
+if raw_dim == in_f and in_f != out_dim:
+    mode = "sidecar"
+elif raw_dim == out_dim:
+    mode = "in-graph"
+else:
+    print(f"FAIL: raw dim {raw_dim} matches neither proj in ({in_f}) nor ollama out ({out_dim})", file=sys.stderr)
+    sys.exit(1)
+print(f"projection mode: {mode}")
+
 max_diff = 0.0
 for raw_row, got in zip(rows, orows):
-    if len(raw_row) != in_f or len(got) != out_f:
-        print(f"FAIL: dim mismatch (raw {len(raw_row)} vs proj in {in_f}; "
-              f"ollama {len(got)} vs proj out {out_f})", file=sys.stderr)
+    if len(got) != out_dim:
+        print(f"FAIL: ragged ollama row ({len(got)} vs {out_dim})", file=sys.stderr)
         sys.exit(1)
-    proj = [bias[j] + sum(weight[j * in_f + k] * raw_row[k] for k in range(in_f))
-            for j in range(out_f)]
+    if mode == "sidecar":
+        proj = [bias[j] + sum(weight[j * in_f + k] * raw_row[k] for k in range(in_f))
+                for j in range(out_f)]
+    else:
+        proj = raw_row
     norm = math.sqrt(sum(v * v for v in proj))
     if norm <= 0 or not math.isfinite(norm):
         print("FAIL: zero or non-finite projected vector", file=sys.stderr)
         sys.exit(1)
-    for j in range(out_f):
+    for j in range(out_dim):
         max_diff = max(max_diff, abs(proj[j] / norm - got[j]))
 
-print(f"rows={len(rows)} raw_dim={in_f} out_dim={out_f} max_abs_diff={max_diff:.6g}")
+print(f"rows={len(rows)} raw_dim={raw_dim} out_dim={out_dim} max_abs_diff={max_diff:.6g}")
 if max_diff > tol:
     print(f"FAIL: max abs diff {max_diff:.6g} exceeds tolerance {tol:.6g}", file=sys.stderr)
     sys.exit(1)

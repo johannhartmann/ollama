@@ -1791,11 +1791,13 @@ downstream, e.g. by a vector database.
 
 This endpoint is local-only and requires a multivector model: a GGUF exported
 with `pooling_type=none` that carries a `pg_colbert.profile_json` profile.
-When the Modelfile `FROM` points at such a GGUF, an accompanying
-`<model>.gguf.colbert_proj` projection sidecar is picked up automatically and
-attached to the model. Dense models are rejected; conversely, `/api/embed`,
-`/api/embeddings`, and `/v1/embeddings` reject multivector models with an
-error directing you here.
+Exports that embed the ColBERT projection in the GGUF (`dense_2.*` tensors
+plus `{arch}.embedding_length_out`) are self-contained — the projection runs
+inside the model graph. Backbone-only exports instead ship a
+`<model>.gguf.colbert_proj` projection sidecar, which the Modelfile `FROM`
+picks up automatically and attaches to the model. Dense models are rejected;
+conversely, `/api/embed`, `/api/embeddings`, and `/v1/embeddings` reject
+multivector models with an error directing you here.
 
 ### Parameters
 
