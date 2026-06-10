@@ -1782,11 +1782,13 @@ of a single pooled vector.
 
 Where [`/api/embed`](#generate-embeddings) returns one dense vector per input,
 `/api/multivectors` returns one variable-length **matrix** per input: the
-model's token rows, exactly as it produces them. When the GGUF carries an
-in-graph dense projection (`dense_2.*` tensors plus
-`{arch}.embedding_length_out`, emitted by llama.cpp's converter from
-sentence-transformers `1_Dense` modules), the rows are returned at the
-projected output width.
+model's token rows, exactly as it produces them. If the GGUF contains an
+in-graph projection, the rows are returned at the projected output width.
+
+> [!NOTE]
+> llama.cpp converts sentence-transformers Dense modules (e.g. PyLate's
+> `1_Dense`) into in-graph `dense_2.*` tensors with
+> `{arch}.embedding_length_out` declaring the projected width.
 
 Ollama does not apply retrieval-model semantics: query/document marker
 prefixes, query expansion, skiplist or punctuation filtering, row
@@ -1813,9 +1815,10 @@ The response includes a `shape` of `[rows, dim]` for each item; `dimension` is
 the row width.
 
 > [!NOTE]
-> Token-level embeddings require the whole input in a single batch. Inputs
-> longer than the batch size (default 512 tokens) return an error; raise
-> `num_batch` in `options` for long documents.
+> Token-level embeddings require the whole input in a single batch.
+> Multivector models use Ollama's embedding batch default (currently 2048
+> tokens, capped by the context length); inputs longer than the batch size
+> return an error. Raise `num_batch` in `options` for longer documents.
 
 ### Examples
 

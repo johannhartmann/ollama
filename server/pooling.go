@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -84,5 +85,25 @@ func ggufPoolingType(kv ggml.KV) (string, bool) {
 func isPoolingNone(kv ggml.KV) bool {
 	p, ok := ggufPoolingType(kv)
 	return ok && p == "none"
+}
+
+// rejectMultivectorModel returns an error directing callers of the dense
+// embedding endpoints to /api/multivectors when the named model emits
+// per-token (pooling=none) embeddings. It reads only the GGUF metadata, so
+// the rejection happens before a runner is loaded. Lookup problems are not
+// reported here; they surface through the normal scheduling path.
+func rejectMultivectorModel(name string) error {
+	m, err := GetModel(name)
+	if err != nil || m.ModelPath == "" || !m.isGGUF() {
+		return nil
+	}
+	kvData, _, err := getModelData(m.ModelPath, false)
+	if err != nil {
+		return nil
+	}
+	if isPoolingNone(kvData) {
+		return errors.New(multivectorRedirectError)
+	}
+	return nil
 }
 

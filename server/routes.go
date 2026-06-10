@@ -165,10 +165,18 @@ func shouldApplyEmbeddingBatchDefault(m *Model, requestOpts map[string]any) bool
 	if m == nil || hasOption(m.Options, "num_batch") || hasOption(requestOpts, "num_batch") {
 		return false
 	}
-	if slices.Contains(m.Config.Capabilities, string(model.CapabilityEmbedding)) {
+	if slices.Contains(m.Config.Capabilities, string(model.CapabilityEmbedding)) ||
+		slices.Contains(m.Config.Capabilities, string(model.CapabilityMultivector)) {
 		return true
 	}
-	return m.ModelPath != "" && m.CheckCapabilities(model.CapabilityEmbedding) == nil
+	if m.ModelPath == "" {
+		return false
+	}
+	// multivector (pooling=none) models need the larger batch even more than
+	// dense embedders: the whole input must fit in a single batch to emit
+	// per-token rows
+	return m.CheckCapabilities(model.CapabilityEmbedding) == nil ||
+		m.CheckCapabilities(model.CapabilityMultivector) == nil
 }
 
 func hasOption(opts map[string]any, name string) bool {
@@ -804,6 +812,14 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 		return
 	}
 
+	// reject multivector (pooling=none) models before loading a runner;
+	// other lookup errors fall through to scheduleRunner for its canonical
+	// error handling
+	if err := rejectMultivectorModel(name.String()); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	r, m, opts, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
@@ -820,11 +836,6 @@ func (s *Server) EmbedHandler(c *gin.Context) {
 	kvData, _, err := getModelData(m.ModelPath, false)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	if isPoolingNone(kvData) {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": multivectorRedirectError})
 		return
 	}
 
@@ -1021,6 +1032,12 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 
 	name := modelRef.Name
 
+	// reject multivector (pooling=none) models before loading a runner
+	if err := rejectMultivectorModel(name.String()); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
 	r, m, _, err := s.scheduleRunner(c.Request.Context(), name.String(), []model.Capability{}, req.Options, req.KeepAlive, nil)
 	if err != nil {
 		handleScheduleError(c, req.Model, err)
@@ -1030,14 +1047,6 @@ func (s *Server) EmbeddingsHandler(c *gin.Context) {
 	// an empty request loads the model
 	if req.Prompt == "" {
 		c.JSON(http.StatusOK, api.EmbeddingResponse{Embedding: []float64{}})
-		return
-	}
-
-	if kvData, _, err := getModelData(m.ModelPath, false); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	} else if isPoolingNone(kvData) {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": multivectorRedirectError})
 		return
 	}
 
