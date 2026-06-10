@@ -533,7 +533,7 @@ components:
           description: Load time in nanoseconds
         prompt_eval_count:
           type: integer
-          description: Number of input tokens processed
+          description: Number of token rows returned across all inputs (one per input token under pooling none)
     CreateRequest:
       type: object
       required: [model]

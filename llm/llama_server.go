@@ -2293,7 +2293,15 @@ func (s *llamaServerRunner) MultiVector(ctx context.Context, input string, _ Mul
 		return MultiVectorResult{}, 0, api.StatusError{StatusCode: statusCode, ErrorMessage: errMsg}
 	}
 
-	// non-OAI shape: [{"index":0,"embedding":[[...],...]}]
+	return parseMultiVectorEmbeddings(body)
+}
+
+// parseMultiVectorEmbeddings parses llama-server's non-OAI /embeddings
+// response for a single input: [{"index":0,"embedding":[[...],...]}]. The
+// returned count is the number of rows — for pooling=none the server emits
+// exactly one row per processed token, so this stands in for the prompt
+// token count until llama-server reports an explicit one on this shape.
+func parseMultiVectorEmbeddings(body []byte) (MultiVectorResult, int, error) {
 	var results []struct {
 		Index     int         `json:"index"`
 		Embedding [][]float32 `json:"embedding"`
@@ -2316,7 +2324,6 @@ func (s *llamaServerRunner) MultiVector(ctx context.Context, input string, _ Mul
 		}
 	}
 
-	// pooling=none emits exactly one row per processed token
 	return MultiVectorResult{Vectors: rows, Dimension: dim}, len(rows), nil
 }
 
@@ -2325,6 +2332,12 @@ func normalizeEmbeddingError(statusCode int, body []byte) (int, string) {
 	errMsg := extractLlamaServerErrorMessage(body)
 	if errMsg == "" {
 		errMsg = raw
+	}
+
+	// embeddings require the whole input in one batch; tell the caller which
+	// limit was hit so they know whether to raise num_batch or shorten input
+	if isEmbeddingBatchLimitError(errMsg) || isEmbeddingBatchLimitError(raw) {
+		return http.StatusBadRequest, "the input length exceeds the batch size; increase num_batch"
 	}
 
 	if isEmbeddingInputLimitError(errMsg) || isEmbeddingInputLimitError(raw) {
@@ -2362,8 +2375,11 @@ func isEmbeddingInputLimitError(errMsg string) bool {
 	return strings.Contains(msg, "too large") ||
 		strings.Contains(msg, "context size") ||
 		strings.Contains(msg, "context length") ||
-		strings.Contains(msg, "physical batch size") ||
 		strings.Contains(msg, "exceeds the available context")
+}
+
+func isEmbeddingBatchLimitError(errMsg string) bool {
+	return strings.Contains(strings.ToLower(errMsg), "physical batch size")
 }
 
 func (s *llamaServerRunner) tokenize(ctx context.Context, content any, addSpecial bool, parseSpecial *bool) ([]int, error) {
