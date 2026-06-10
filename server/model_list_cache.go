@@ -538,6 +538,7 @@ func readModelListGGUF(path string) (modelListGGUF, error) {
 	info := modelListGGUF{}
 	var architecture string
 	var hasPoolingType bool
+	var poolingType int
 
 	for range numKV {
 		key, err := readModelListGGUFString(r, byteOrder, version)
@@ -575,7 +576,13 @@ func readModelListGGUF(path string) (modelListGGUF, error) {
 		if architecture != "" && strings.HasPrefix(key, architecture+".") {
 			switch strings.TrimPrefix(key, architecture+".") {
 			case "pooling_type":
+				value, err := readModelListGGUFIntValue(r, byteOrder, version, valueType)
+				if err != nil {
+					return modelListGGUF{}, err
+				}
 				hasPoolingType = true
+				poolingType = value
+				continue
 			case "vision.block_count":
 				info.Capabilities = appendModelListCapability(info.Capabilities, model.CapabilityVision)
 			case "audio.block_count":
@@ -603,7 +610,13 @@ func readModelListGGUF(path string) (modelListGGUF, error) {
 	}
 
 	if hasPoolingType {
-		info.Capabilities = appendModelListCapability(info.Capabilities, model.CapabilityEmbedding)
+		// pooling_type=none is a multivector (ColBERT) model; every other pooling
+		// mode is a dense embedding model. This mirrors Model.Capabilities.
+		if name, ok := normalizePoolingType(poolingType); ok && name == "none" {
+			info.Capabilities = appendModelListCapability(info.Capabilities, model.CapabilityMultivector)
+		} else {
+			info.Capabilities = appendModelListCapability(info.Capabilities, model.CapabilityEmbedding)
+		}
 	} else {
 		info.Capabilities = appendModelListCapability(info.Capabilities, model.CapabilityCompletion)
 	}

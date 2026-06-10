@@ -39,16 +39,17 @@ import (
 const layerPruneGracePeriod = time.Hour
 
 var (
-	errCapabilities         = errors.New("does not support")
-	errCapabilityCompletion = errors.New("completion")
-	errCapabilityTools      = errors.New("tools")
-	errCapabilityInsert     = errors.New("insert")
-	errCapabilityVision     = errors.New("vision")
-	errCapabilityAudio      = errors.New("audio")
-	errCapabilityEmbedding  = errors.New("embedding")
-	errCapabilityThinking   = errors.New("thinking")
-	errCapabilityImage      = errors.New("image generation")
-	errInsecureProtocol     = errors.New("insecure protocol http")
+	errCapabilities          = errors.New("does not support")
+	errCapabilityCompletion  = errors.New("completion")
+	errCapabilityTools       = errors.New("tools")
+	errCapabilityInsert      = errors.New("insert")
+	errCapabilityVision      = errors.New("vision")
+	errCapabilityAudio       = errors.New("audio")
+	errCapabilityEmbedding   = errors.New("embedding")
+	errCapabilityMultivector = errors.New("multivector")
+	errCapabilityThinking    = errors.New("thinking")
+	errCapabilityImage       = errors.New("image generation")
+	errInsecureProtocol      = errors.New("insecure protocol http")
 )
 
 type registryOptions struct {
@@ -160,8 +161,16 @@ func (m *Model) ggufCapabilities(capabilities []model.Capability, source templat
 	case templateCapabilityChat:
 		capabilities = chatTemplateCapabilities(capabilities, f.KeyValue("tokenizer.chat_template").String())
 	}
-	if f.KeyValue("pooling_type").Valid() {
-		capabilities = appendCapability(capabilities, model.CapabilityEmbedding)
+	if pooling := f.KeyValue("pooling_type"); pooling.Valid() {
+		// pooling_type=none emits one embedding row per token (ColBERT /
+		// ModernColBERT). Those models are served by /api/multivectors, not the
+		// dense embedding endpoints, so they advertise multivector rather than
+		// embedding. Every other pooling mode produces a single pooled vector.
+		if name, ok := normalizePoolingType(pooling.Uint()); ok && name == "none" {
+			capabilities = appendCapability(capabilities, model.CapabilityMultivector)
+		} else {
+			capabilities = appendCapability(capabilities, model.CapabilityEmbedding)
+		}
 	} else {
 		// If no embedding is specified, we assume the model supports completion.
 		capabilities = appendCapability(capabilities, model.CapabilityCompletion)
@@ -491,14 +500,15 @@ func (m *Model) CheckCapabilities(want ...model.Capability) error {
 
 	// Map capabilities to their corresponding error
 	capToErr := map[model.Capability]error{
-		model.CapabilityCompletion: errCapabilityCompletion,
-		model.CapabilityTools:      errCapabilityTools,
-		model.CapabilityInsert:     errCapabilityInsert,
-		model.CapabilityVision:     errCapabilityVision,
-		model.CapabilityAudio:      errCapabilityAudio,
-		model.CapabilityEmbedding:  errCapabilityEmbedding,
-		model.CapabilityThinking:   errCapabilityThinking,
-		model.CapabilityImage:      errCapabilityImage,
+		model.CapabilityCompletion:  errCapabilityCompletion,
+		model.CapabilityTools:       errCapabilityTools,
+		model.CapabilityInsert:      errCapabilityInsert,
+		model.CapabilityVision:      errCapabilityVision,
+		model.CapabilityAudio:       errCapabilityAudio,
+		model.CapabilityEmbedding:   errCapabilityEmbedding,
+		model.CapabilityMultivector: errCapabilityMultivector,
+		model.CapabilityThinking:    errCapabilityThinking,
+		model.CapabilityImage:       errCapabilityImage,
 	}
 
 	for _, cap := range want {

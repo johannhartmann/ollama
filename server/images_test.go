@@ -285,6 +285,12 @@ func TestModelCapabilities(t *testing.T) {
 		"bert.pooling_type":    uint32(1),
 	}, []*ggml.Tensor{})
 
+	// Create multivector model (bert architecture with pooling_type=none)
+	multivectorModelPath, _ := createBinFile(t, ggml.KV{
+		"general.architecture": "bert",
+		"bert.pooling_type":    uint32(0),
+	}, []*ggml.Tensor{})
+
 	audioProjectorPath, _ := createBinFile(t, ggml.KV{
 		"general.architecture":    "clip",
 		"clip.has_audio_encoder":  true,
@@ -421,6 +427,14 @@ func TestModelCapabilities(t *testing.T) {
 				Template:  chatTemplate,
 			},
 			expectedCaps: []model.Capability{model.CapabilityEmbedding},
+		},
+		{
+			name: "model with multivector capability",
+			model: Model{
+				ModelPath: multivectorModelPath,
+				Template:  chatTemplate,
+			},
+			expectedCaps: []model.Capability{model.CapabilityMultivector},
 		},
 		{
 			name: "model with audio projector capability",
