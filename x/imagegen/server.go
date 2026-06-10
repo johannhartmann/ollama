@@ -427,6 +427,11 @@ func (s *Server) Embedding(ctx context.Context, input string) ([]float32, int, e
 	return nil, 0, errors.New("embeddings not supported for MLX models")
 }
 
+// MultiVector returns token-level embeddings for the input.
+func (s *Server) MultiVector(ctx context.Context, input string, opts llm.MultiVectorOptions) (llm.MultiVectorResult, int, error) {
+	return llm.MultiVectorResult{}, 0, errors.New("multivector embeddings not supported for MLX models")
+}
+
 // Tokenize tokenizes the input content.
 func (s *Server) Tokenize(ctx context.Context, content string) ([]int, error) {
 	return nil, errors.New("tokenization not supported for image generation models")

@@ -65,6 +65,7 @@ type LlamaServer interface {
 	Chat(ctx context.Context, req ChatRequest, fn func(ChatResponse)) error
 	ApplyChatTemplate(ctx context.Context, req ChatRequest) (string, error)
 	Embedding(ctx context.Context, input string) ([]float32, int, error)
+	MultiVector(ctx context.Context, input string, opts MultiVectorOptions) (MultiVectorResult, int, error)
 	Tokenize(ctx context.Context, content string) ([]int, error)
 	Detokenize(ctx context.Context, tokens []int) (string, error)
 	Close() error
@@ -82,6 +83,21 @@ type LlamaServerConfig struct {
 	ContextShift   bool
 	EnableMTP      bool
 	DraftModelPath string
+}
+
+// MultiVectorOptions carries per-request options for [LlamaServer.MultiVector].
+// It is intentionally empty and reserved for future tuning so the interface
+// does not need to change when options arrive.
+type MultiVectorOptions struct{}
+
+// MultiVectorResult is the token-level embedding matrix for a single input,
+// produced by a pooling=none (ColBERT/ModernColBERT) model. Vectors holds one
+// raw row per token, at the model's output width (the projected width when
+// the GGUF carries an in-graph dense projection); Dimension is the width of
+// each row.
+type MultiVectorResult struct {
+	Vectors   [][]float32
+	Dimension int
 }
 
 // LoadModel will load a model from disk. The model must be in the GGML format.

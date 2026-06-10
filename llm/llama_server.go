@@ -2240,6 +2240,86 @@ func (s *llamaServerRunner) Embedding(ctx context.Context, input string) ([]floa
 	return embedding, 0, nil
 }
 
+// MultiVector returns the token-level embedding matrix for a single input
+// from a pooling=none model. It calls llama-server's non-OAI /embeddings
+// endpoint, which emits one row per token; when the GGUF carries an in-graph
+// dense projection (dense_2 tensors), the rows arrive at the projected
+// width. The rows are returned raw: Ollama applies no normalization,
+// cropping, or token-plan semantics — query/document formatting and MaxSim
+// scoring are client responsibilities.
+func (s *llamaServerRunner) MultiVector(ctx context.Context, input string, _ MultiVectorOptions) (MultiVectorResult, int, error) {
+	if err := s.sem.Acquire(ctx, 1); err != nil {
+		return MultiVectorResult{}, 0, err
+	}
+	defer s.sem.Release(1)
+
+	status, err := s.getServerStatusRetry(ctx)
+	if err != nil {
+		return MultiVectorResult{}, 0, err
+	} else if status != ServerStatusReady {
+		return MultiVectorResult{}, 0, fmt.Errorf("unexpected server status: %s", status)
+	}
+
+	// "content" selects the non-OAI response shape, which preserves the
+	// per-token rows; embd_normalize is ignored for pooling=none but makes
+	// the raw-rows intent explicit.
+	data, err := json.Marshal(map[string]any{
+		"content":        input,
+		"embd_normalize": -1,
+	})
+	if err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("error marshaling embeddings request: %w", err)
+	}
+
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/embeddings", s.port), bytes.NewBuffer(data))
+	if err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("error creating embeddings request: %w", err)
+	}
+	r.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient().Do(r)
+	if err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("do embeddings request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("error reading embeddings response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		statusCode, errMsg := normalizeEmbeddingError(resp.StatusCode, body)
+		return MultiVectorResult{}, 0, api.StatusError{StatusCode: statusCode, ErrorMessage: errMsg}
+	}
+
+	// non-OAI shape: [{"index":0,"embedding":[[...],...]}]
+	var results []struct {
+		Index     int         `json:"index"`
+		Embedding [][]float32 `json:"embedding"`
+	}
+	if err := json.Unmarshal(body, &results); err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("unmarshal embeddings response: %w", err)
+	}
+	if len(results) != 1 {
+		return MultiVectorResult{}, 0, fmt.Errorf("embeddings response contained %d results for one input", len(results))
+	}
+
+	rows := results[0].Embedding
+	if len(rows) == 0 {
+		return MultiVectorResult{}, 0, errors.New("model did not return token embeddings (is pooling none?)")
+	}
+	dim := len(rows[0])
+	for i, row := range rows {
+		if len(row) != dim {
+			return MultiVectorResult{}, 0, fmt.Errorf("ragged token embeddings: row %d has dim %d, expected %d", i, len(row), dim)
+		}
+	}
+
+	// pooling=none emits exactly one row per processed token
+	return MultiVectorResult{Vectors: rows, Dimension: dim}, len(rows), nil
+}
+
 func normalizeEmbeddingError(statusCode int, body []byte) (int, string) {
 	raw := strings.TrimSpace(string(body))
 	errMsg := extractLlamaServerErrorMessage(body)
