@@ -435,6 +435,16 @@ func (c *Client) Embed(ctx context.Context, req *EmbedRequest) (*EmbedResponse, 
 	return &resp, nil
 }
 
+// MultiVector generates token-level embedding matrices from a pooling=none
+// (late-interaction) model.
+func (c *Client) MultiVector(ctx context.Context, req *MultiVectorRequest) (*MultiVectorResponse, error) {
+	var resp MultiVectorResponse
+	if err := c.do(ctx, http.MethodPost, "/api/multivectors", req, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // Embeddings generates an embedding from a model.
 func (c *Client) Embeddings(ctx context.Context, req *EmbeddingRequest) (*EmbeddingResponse, error) {
 	var resp EmbeddingResponse
