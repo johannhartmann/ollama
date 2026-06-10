@@ -470,6 +470,70 @@ components:
         prompt_eval_count:
           type: integer
           description: Number of input tokens processed to generate embeddings
+    MultiVectorRequest:
+      type: object
+      required: [model, input]
+      properties:
+        model:
+          type: string
+          description: Model name
+        input:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: string
+          description: Text or array of texts to generate multivector embeddings for, already formatted for the retrieval model (e.g. carrying its query or document marker)
+        truncate:
+          type: boolean
+          default: true
+          description: If true, truncate inputs that exceed the context window. If false, an input that would be cut returns an error.
+        keep_alive:
+          type: string
+          description: Model keep-alive duration
+        options:
+          $ref: "#/components/schemas/ModelOptions"
+    MultiVectorResponse:
+      type: object
+      properties:
+        model:
+          type: string
+          description: Model that produced the embeddings
+        dimension:
+          type: integer
+          description: Width of each token row, 0 when there are no rows
+        data:
+          type: array
+          items:
+            type: object
+            properties:
+              index:
+                type: integer
+                description: Position of this item in the input
+              shape:
+                type: array
+                items:
+                  type: integer
+                description: Always [rows, dim]
+              vectors:
+                type: array
+                items:
+                  type: array
+                  items:
+                    type: number
+                description: One row per token of the input, exactly as the model produces them (at the projected width when the GGUF carries an in-graph dense projection)
+              truncated:
+                type: boolean
+                description: Whether the input was cut to fit the context length
+        total_duration:
+          type: integer
+          description: Total time spent generating in nanoseconds
+        load_duration:
+          type: integer
+          description: Load time in nanoseconds
+        prompt_eval_count:
+          type: integer
+          description: Number of input tokens processed
     CreateRequest:
       type: object
       required: [model]
@@ -1127,6 +1191,59 @@ paths:
                 total_duration: 14143917
                 load_duration: 1019500
                 prompt_eval_count: 8
+  /api/multivectors:
+    post:
+      summary: Generate multivector embeddings
+      description: Creates per-token (ColBERT / late-interaction) embeddings for pooling=none models. Returns one matrix per input rather than one dense vector.
+      operationId: multivectors
+      x-mint:
+        href: /api/multivectors
+      x-codeSamples:
+        - lang: bash
+          label: Default
+          source: |
+            curl http://localhost:11434/api/multivectors -d '{
+              "model": "colbert",
+              "input": "Why is the sky blue?"
+            }'
+        - lang: bash
+          label: Multiple inputs
+          source: |
+            curl http://localhost:11434/api/multivectors -d '{
+              "model": "colbert",
+              "input": [
+                "Why is the sky blue?",
+                "Why is the grass green?"
+              ]
+            }'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MultiVectorRequest"
+            example:
+              model: colbert
+              input: "Why is the sky blue?"
+      responses:
+        "200":
+          description: Multivector embeddings for the input text
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MultiVectorResponse"
+              example:
+                model: "colbert"
+                dimension: 128
+                data:
+                  - index: 0
+                    shape: [6, 128]
+                    vectors:
+                      - [0.0123, -0.0456, 0.0789]
+                      - [0.0234, -0.0567, 0.0890]
+                total_duration: 14143917
+                load_duration: 1019500
+                prompt_eval_count: 6
   /api/tags:
     get:
       summary: List models

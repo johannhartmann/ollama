@@ -14,6 +14,7 @@
 - [Pull a Model](#pull-a-model)
 - [Push a Model](#push-a-model)
 - [Generate Embeddings](#generate-embeddings)
+- [Generate Multivector Embeddings](#generate-multivector-embeddings)
 - [List Running Models](#list-running-models)
 - [Version](#version)
 - [Experimental: Image Generation](#image-generation-experimental)
@@ -1767,6 +1768,103 @@ curl http://localhost:11434/api/embed -d '{
   ]
 }
 ```
+
+## Generate Multivector Embeddings
+
+```
+POST /api/multivectors
+```
+
+Generate multivector (late-interaction) embeddings from a model. This endpoint
+targets ColBERT / ModernColBERT models, which are converted with
+`pooling_type=none` and therefore emit one embedding row **per token** instead
+of a single pooled vector.
+
+Where [`/api/embed`](#generate-embeddings) returns one dense vector per input,
+`/api/multivectors` returns one variable-length **matrix** per input: the
+model's token rows, exactly as it produces them. When the GGUF carries an
+in-graph dense projection (`dense_2.*` tensors plus
+`{arch}.embedding_length_out`, emitted by llama.cpp's converter from
+sentence-transformers `1_Dense` modules), the rows are returned at the
+projected output width.
+
+Ollama does not apply retrieval-model semantics: query/document marker
+prefixes, query expansion, skiplist or punctuation filtering, row
+normalization, and MaxSim scoring are the caller's responsibility. Send inputs
+already formatted for the model (e.g. with its query or document marker) and
+compare the matrices downstream, e.g. in a vector database.
+
+This endpoint is local-only and requires a `pooling_type=none` model. Dense
+models are rejected; conversely, `/api/embed`, `/api/embeddings`, and
+`/v1/embeddings` reject multivector models with an error directing you here.
+
+### Parameters
+
+- `model`: name of model to generate embeddings from
+- `input`: text or list of text to generate embeddings for, already formatted for the retrieval model
+
+Advanced parameters:
+
+- `truncate`: truncates the end of each input to fit within context length. Returns an error if `false` and the input would be cut. Defaults to `true`. A cut sets `truncated` on the item.
+- `options`: additional model parameters listed in the documentation for the [Modelfile](./modelfile.mdx#valid-parameters-and-values)
+- `keep_alive`: controls how long the model will stay loaded into memory following the request (default: `5m`)
+
+The response includes a `shape` of `[rows, dim]` for each item; `dimension` is
+the row width.
+
+> [!NOTE]
+> Token-level embeddings require the whole input in a single batch. Inputs
+> longer than the batch size (default 512 tokens) return an error; raise
+> `num_batch` in `options` for long documents.
+
+### Examples
+
+#### Request (single input)
+
+```shell
+curl http://localhost:11434/api/multivectors -d '{
+  "model": "colbert",
+  "input": "Why is the sky blue?"
+}'
+```
+
+#### Response
+
+```json
+{
+  "model": "colbert",
+  "dimension": 128,
+  "data": [
+    {
+      "index": 0,
+      "shape": [6, 128],
+      "vectors": [
+        [0.0123, -0.0456, 0.0789],
+        [0.0234, -0.0567, 0.0890]
+      ]
+    }
+  ],
+  "total_duration": 14143917,
+  "load_duration": 1019500,
+  "prompt_eval_count": 6
+}
+```
+
+#### Request (multiple inputs)
+
+```shell
+curl http://localhost:11434/api/multivectors -d '{
+  "model": "colbert",
+  "input": ["Why is the sky blue?", "Why is the grass green?"]
+}'
+```
+
+Each item in `data` carries its own `shape`; row counts differ per input.
+
+> [!IMPORTANT]
+> Do not use `/v1/embeddings` (the OpenAI-compatible endpoint) for ColBERT
+> models — OpenAI embedding clients expect a single dense vector per input and
+> cannot consume multivectors. Use `/api/multivectors` instead.
 
 ## List Running Models
 
