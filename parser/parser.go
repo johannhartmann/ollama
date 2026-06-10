@@ -82,6 +82,10 @@ func (f Modelfile) CreateRequest(relativeDir string) (*api.CreateRequest, error)
 			}
 			modelPaths = append(modelPaths, path)
 
+			if err := addColbertProjectionSidecars(digestMap); err != nil {
+				return nil, err
+			}
+
 			if req.Files == nil {
 				req.Files = digestMap
 			} else {
@@ -213,6 +217,36 @@ func canonicalLocalPath(path string) (string, error) {
 		return "", err
 	}
 	return filepath.EvalSymlinks(abs)
+}
+
+// addColbertProjectionSidecars picks up `<model>.gguf.colbert_proj` files
+// sitting next to FROM GGUF files. ColBERT GGUF exports ship the runtime
+// projection in this sidecar; the server attaches it to the model as a
+// projection layer.
+func addColbertProjectionSidecars(digestMap map[string]string) error {
+	var sidecars []string
+	for file := range digestMap {
+		if !strings.HasSuffix(file, ".gguf") {
+			continue
+		}
+		sidecar := file + ".colbert_proj"
+		if _, exists := digestMap[sidecar]; exists {
+			continue
+		}
+		if fi, err := os.Stat(sidecar); err != nil || fi.IsDir() {
+			continue
+		}
+		sidecars = append(sidecars, sidecar)
+	}
+
+	for _, sidecar := range sidecars {
+		digest, err := digestForFile(sidecar)
+		if err != nil {
+			return err
+		}
+		digestMap[sidecar] = digest
+	}
+	return nil
 }
 
 func fileDigestMap(path string) (map[string]string, error) {

@@ -405,6 +405,15 @@ func convertModelFromFilesWithMediaType(files map[string]string, baseLayers []*l
 		var splitGroupKeys []string
 		splitGroups := map[string][]*layerGGML{}
 		for _, filePath := range filePaths {
+			if strings.HasSuffix(filePath, ".colbert_proj") {
+				layer, err := colbertProjectionLayer(files[filePath], filePath)
+				if err != nil {
+					return nil, err
+				}
+				allLayers = append(allLayers, layer)
+				continue
+			}
+
 			layers, err := ggufLayersWithMediaType(files[filePath], filePath, mediaType, fn)
 			if err != nil {
 				return nil, err
@@ -1246,6 +1255,40 @@ func ggufLayersWithMediaType(digest, sourceName, mediaType string, fn func(resp 
 	layers = append(layers, &layerGGML{Layer: layer, GGML: f, rewriteForCreate: true})
 
 	return layers, nil
+}
+
+// mediaTypeColbertProjection is the layer media type for the ColBERT
+// projection sidecar (`<model>.gguf.colbert_proj`) written by ColBERT GGUF
+// exporters. The blob is passed verbatim to llama-server, which applies the
+// projection during late-interaction encoding.
+const mediaTypeColbertProjection = "application/vnd.ollama.image.colbert_projection"
+
+// projSidecarMagic is the header of a ColBERT projection sidecar file.
+var projSidecarMagic = []byte("OLPROJ01")
+
+func colbertProjectionLayer(digest, sourceName string) (*layerGGML, error) {
+	blobPath, err := manifest.BlobsPath(digest)
+	if err != nil {
+		return nil, err
+	}
+
+	blob, err := os.Open(blobPath)
+	if err != nil {
+		return nil, err
+	}
+	defer blob.Close()
+
+	magic := make([]byte, len(projSidecarMagic))
+	if _, err := io.ReadFull(blob, magic); err != nil || !bytes.Equal(magic, projSidecarMagic) {
+		return nil, fmt.Errorf("%s is not a ColBERT projection sidecar", sourceName)
+	}
+
+	layer, err := manifest.NewLayerFromLayer(digest, mediaTypeColbertProjection, sourceName)
+	if err != nil {
+		return nil, err
+	}
+
+	return &layerGGML{Layer: layer}, nil
 }
 
 func isProjectorGGUF(kv ggml.KV) bool {

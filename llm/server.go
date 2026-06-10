@@ -83,20 +83,29 @@ type LlamaServerConfig struct {
 	ContextShift   bool
 	EnableMTP      bool
 	DraftModelPath string
+
+	// ColbertProjPath points at the model's ColBERT projection sidecar blob.
+	// It is handed to llama-server via the OLLAMA_COLBERT_PROJECTION
+	// environment variable and applied by the /colbert endpoint.
+	ColbertProjPath string
 }
 
 // MultiVectorOptions carries per-request options for [LlamaServer.MultiVector].
-// It is intentionally empty in the MVP and reserved for future tuning (e.g.
-// explicit normalization control) so the interface does not need to change
-// again when those options arrive.
-type MultiVectorOptions struct{}
+type MultiVectorOptions struct {
+	// InputType selects the ColBERT encoding role: "query" applies the query
+	// prefix and [MASK] expansion, "document" (the default when empty) applies
+	// the document prefix and skiplist filtering.
+	InputType string
+}
 
 // MultiVectorResult is the token-level embedding matrix for a single input,
 // produced by a pooling=none (ColBERT/ModernColBERT) model. Vectors holds one
-// row per token; Dimension is the width of each row.
+// projected, L2-normalized row per retained token; Dimension is the width of
+// each row; Tokens lists the retained token ids aligned with Vectors.
 type MultiVectorResult struct {
 	Vectors   [][]float32
 	Dimension int
+	Tokens    []int32
 }
 
 // LoadModel will load a model from disk. The model must be in the GGML format.

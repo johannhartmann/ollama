@@ -396,19 +396,25 @@ func (s *Server) MultiVectorHandler(c *gin.Context) {
 	var totalTokens uint64
 	for i, text := range input {
 		g.Go(func() error {
-			finalText, tokens, truncated, err := prepare(text)
+			finalText, _, truncated, err := prepare(text)
 			if err != nil {
 				return err
 			}
 
-			result, _, err := r.MultiVector(ctx, finalText, llm.MultiVectorOptions{})
+			result, promptTokens, err := r.MultiVector(ctx, finalText, llm.MultiVectorOptions{InputType: req.InputType})
 			if err != nil {
 				return err
 			}
 
+			// Report the retained plan tokens: these are the ids the returned
+			// vectors actually correspond to (after the ColBERT prefix, query
+			// expansion and document skiplist are applied by the runner).
 			var reportTokens []int
 			if req.IncludeTokens {
-				reportTokens = tokens
+				reportTokens = make([]int, len(result.Tokens))
+				for j, t := range result.Tokens {
+					reportTokens[j] = int(t)
+				}
 			}
 
 			item, err := newMultiVectorData(i, result.Vectors, reportTokens, truncated, req.EncodingFormat)
@@ -417,7 +423,7 @@ func (s *Server) MultiVectorHandler(c *gin.Context) {
 			}
 
 			data[i] = item
-			atomic.AddUint64(&totalTokens, uint64(len(tokens)))
+			atomic.AddUint64(&totalTokens, uint64(promptTokens))
 			return nil
 		})
 	}

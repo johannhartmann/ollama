@@ -73,6 +73,7 @@ type Model struct {
 	PreferChatTemplate bool // set when GGUF chat_template should take precedence over Go TEMPLATE
 	AdapterPaths       []string
 	ProjectorPaths     []string
+	ColbertProjPath    string // ColBERT projection sidecar blob, applied by llama-server
 	System             string
 	License            []string
 	Digest             string
@@ -693,6 +694,8 @@ func GetModel(name string) (*Model, error) {
 			m.AdapterPaths = append(m.AdapterPaths, filename)
 		case "application/vnd.ollama.image.projector":
 			m.ProjectorPaths = append(m.ProjectorPaths, filename)
+		case mediaTypeColbertProjection:
+			m.ColbertProjPath = filename
 		case "application/vnd.ollama.image.prompt",
 			"application/vnd.ollama.image.template":
 			m.HasGoTemplate = true

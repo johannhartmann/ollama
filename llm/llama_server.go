@@ -766,6 +766,9 @@ func NewLlamaServerRunner(
 		serverEnvs[k] = v
 	}
 	serverEnvs["LLAMA_MEDIA_MARKER"] = mediaMarker
+	if config.ColbertProjPath != "" {
+		serverEnvs["OLLAMA_COLBERT_PROJECTION"] = config.ColbertProjPath
+	}
 
 	launch := llamaServerLaunchConfig{
 		modelPath:   modelPath,
@@ -2240,24 +2243,91 @@ func (s *llamaServerRunner) Embedding(ctx context.Context, input string) ([]floa
 	return embedding, 0, nil
 }
 
-// MultiVector returns the full token-level embedding matrix for a single input.
-//
-// Unlike Embedding, which targets the OAI-compatible /v1/embeddings endpoint and
-// collapses a nested response to its first row, MultiVector calls llama-server's
-// non-OAI /embeddings endpoint and preserves every token row. The result is
-// returned verbatim: Ollama performs no L2 normalization and no dimension
-// cropping, so the vectors match what llama.cpp emits for the model's configured
-// pooling mode (which, for these models, must be none).
-func (s *llamaServerRunner) MultiVector(ctx context.Context, input string, _ MultiVectorOptions) (MultiVectorResult, int, error) {
-	// The previous implementation POSTed to llama-server's /embeddings endpoint
-	// and returned the raw per-token hidden states. That is the wrong tool for
-	// ColBERT: /embeddings cannot apply the token plan ([Q]/[D] markers, [MASK]
-	// query expansion), the 384->128 colbert.proj projection, L2 normalization,
-	// or the attend_to_expansion attention mask. Those require driving llama.cpp
-	// at the batch level (cf. pg_colbert's colbert_engine_llama.cpp). That native
-	// path replaces this passthrough; until it lands, fail loudly rather than
-	// return embeddings that do not match the reference.
-	return MultiVectorResult{}, 0, errors.New("multivector serving not implemented: native ColBERT path pending (the /embeddings passthrough was removed)")
+// MultiVector returns the ColBERT token-level embedding matrix for a single
+// input. It calls llama-server's /colbert endpoint (an Ollama addition — see
+// llama/compat/server), which applies the model's ColBERT runtime profile:
+// the [Q]/[D] prefix and token plan, [MASK] query expansion, document
+// skiplist filtering, the projection sidecar, and L2 normalization. Ollama
+// performs no further normalization or cropping on the returned rows.
+func (s *llamaServerRunner) MultiVector(ctx context.Context, input string, opts MultiVectorOptions) (MultiVectorResult, int, error) {
+	if err := s.sem.Acquire(ctx, 1); err != nil {
+		return MultiVectorResult{}, 0, err
+	}
+	defer s.sem.Release(1)
+
+	status, err := s.getServerStatusRetry(ctx)
+	if err != nil {
+		return MultiVectorResult{}, 0, err
+	} else if status != ServerStatusReady {
+		return MultiVectorResult{}, 0, fmt.Errorf("unexpected server status: %s", status)
+	}
+
+	inputType := opts.InputType
+	if inputType == "" {
+		inputType = "document"
+	}
+	data, err := json.Marshal(map[string]any{
+		"input":      input,
+		"input_type": inputType,
+	})
+	if err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("error marshaling colbert request: %w", err)
+	}
+
+	r, err := http.NewRequestWithContext(ctx, http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/colbert", s.port), bytes.NewBuffer(data))
+	if err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("error creating colbert request: %w", err)
+	}
+	r.Header.Set("Content-Type", "application/json")
+
+	resp, err := s.httpClient().Do(r)
+	if err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("do colbert request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("error reading colbert response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		statusCode, errMsg := normalizeEmbeddingError(resp.StatusCode, body)
+		return MultiVectorResult{}, 0, api.StatusError{StatusCode: statusCode, ErrorMessage: errMsg}
+	}
+
+	var colbertResp struct {
+		Dim  int `json:"dim"`
+		Data []struct {
+			Index     int         `json:"index"`
+			NTokens   int         `json:"n_tokens"`
+			Tokens    []int32     `json:"tokens"`
+			Embedding [][]float32 `json:"embedding"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &colbertResp); err != nil {
+		return MultiVectorResult{}, 0, fmt.Errorf("unmarshal colbert response: %w", err)
+	}
+	if len(colbertResp.Data) != 1 {
+		return MultiVectorResult{}, 0, fmt.Errorf("colbert response contained %d results for one input", len(colbertResp.Data))
+	}
+
+	item := colbertResp.Data[0]
+	for _, row := range item.Embedding {
+		if len(row) != colbertResp.Dim {
+			return MultiVectorResult{}, 0, fmt.Errorf("colbert response row has dim %d, expected %d", len(row), colbertResp.Dim)
+		}
+	}
+
+	promptTokens := item.NTokens
+	if promptTokens == 0 {
+		promptTokens = len(item.Embedding)
+	}
+	return MultiVectorResult{
+		Vectors:   item.Embedding,
+		Dimension: colbertResp.Dim,
+		Tokens:    item.Tokens,
+	}, promptTokens, nil
 }
 
 func normalizeEmbeddingError(statusCode int, body []byte) (int, string) {

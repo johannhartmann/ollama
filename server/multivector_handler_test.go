@@ -97,9 +97,9 @@ func TestMultiVectorHandlerTwoInputs(t *testing.T) {
 		MultiVectorFn: func(_ context.Context, input string, _ llm.MultiVectorOptions) (llm.MultiVectorResult, int, error) {
 			switch input {
 			case "alpha":
-				return llm.MultiVectorResult{Vectors: [][]float32{{3, 4}}, Dimension: 2}, 0, nil
+				return llm.MultiVectorResult{Vectors: [][]float32{{3, 4}}, Dimension: 2, Tokens: []int32{101}}, 0, nil
 			default:
-				return llm.MultiVectorResult{Vectors: [][]float32{{5, 6}, {7, 8}}, Dimension: 2}, 0, nil
+				return llm.MultiVectorResult{Vectors: [][]float32{{5, 6}, {7, 8}}, Dimension: 2, Tokens: []int32{102, 103}}, 0, nil
 			}
 		},
 	}
@@ -135,9 +135,10 @@ func TestMultiVectorHandlerTwoInputs(t *testing.T) {
 	if !reflect.DeepEqual(resp.Data[0].Vectors, [][]float32{{3, 4}}) {
 		t.Fatalf("data[0].vectors = %v, want [[3 4]] (no normalization expected)", resp.Data[0].Vectors)
 	}
-	// include_tokens reflects mock tokenization (one token per whitespace field).
-	if len(resp.Data[0].Tokens) != 1 || len(resp.Data[1].Tokens) != 2 {
-		t.Fatalf("tokens = %v / %v, want 1 and 2 tokens", resp.Data[0].Tokens, resp.Data[1].Tokens)
+	// include_tokens reports the runner's retained plan tokens, which are the
+	// ids the returned vectors correspond to.
+	if !reflect.DeepEqual(resp.Data[0].Tokens, []int{101}) || !reflect.DeepEqual(resp.Data[1].Tokens, []int{102, 103}) {
+		t.Fatalf("tokens = %v / %v, want [101] and [102 103]", resp.Data[0].Tokens, resp.Data[1].Tokens)
 	}
 	if resp.Data[0].Data != "" || resp.Data[1].Data != "" {
 		t.Fatal("expected no base64 data field for float encoding")
