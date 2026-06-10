@@ -218,6 +218,20 @@ if(_ollama_link_compat_sources AND DEFINED OLLAMA_LLAMA_CPP_COMPAT_DIR)
     endif()
 endif()
 
+# Link the Ollama ColBERT endpoint sources (llama/compat/server/*.cpp) into
+# the fetched server-context target. The /colbert route call-sites are added
+# by llama/compat/llama-cpp-server-colbert.patch; the implementation stays
+# on-disk in llama/compat/server/.
+if(_ollama_link_compat_sources AND DEFINED OLLAMA_LLAMA_CPP_COMPAT_DIR)
+    file(GLOB _ollama_server_sources CONFIGURE_DEPENDS
+        ${OLLAMA_LLAMA_CPP_COMPAT_DIR}/server/*.cpp)
+    if(_ollama_server_sources AND TARGET server-context)
+        target_sources(server-context PRIVATE ${_ollama_server_sources})
+        target_include_directories(server-context PRIVATE
+            ${OLLAMA_LLAMA_CPP_COMPAT_DIR}/server)
+    endif()
+endif()
+
 # Find GPU toolkits for runtime dependency bundling.
 # The llama.cpp build finds these internally, but we need the
 # variables (CUDAToolkit_LIBRARY_DIR, etc.) in our install scope.

@@ -1,0 +1,151 @@
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 28f738c3f..1d706c885 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -15,6 +15,7 @@
+ #include "speculative.h"
+ #include "mtmd.h"
+ #include "mtmd-helper.h"
++#include "server-ollama-colbert.h"
+ 
+ #include <algorithm>
+ #include <cstddef>
+@@ -4568,6 +4569,10 @@ void server_routes::init_routes() {
+         return handle_embeddings_impl(req, TASK_RESPONSE_TYPE_OAI_EMBD);
+     };
+ 
++    this->post_colbert = [this](const server_http_req & req) {
++        return handle_colbert_impl(req);
++    };
++
+     this->post_rerank = [this](const server_http_req & req) {
+         auto res = create_response();
+         if (!params.embedding || params.pooling_type != LLAMA_POOLING_TYPE_RANK) {
+@@ -4928,3 +4933,87 @@ std::unique_ptr<server_res_generator> server_routes::handle_embeddings_impl(cons
+     res->ok(root);
+     return res;
+ }
++
++// Ollama: ColBERT late-interaction encoding. The model-specific logic
++// (profile, projection sidecar, token plan, post-processing) lives in
++// llama/compat/server/server-ollama-colbert.cpp; this handler only does the
++// task plumbing that needs the private server types.
++std::unique_ptr<server_res_generator> server_routes::handle_colbert_impl(const server_http_req & req) {
++    auto res = create_response();
++    if (!params.embedding) {
++        res->error(format_error_response("This server does not support embeddings. Start it with `--embeddings`", ERROR_TYPE_NOT_SUPPORTED));
++        return res;
++    }
++    if (meta->pooling_type != LLAMA_POOLING_TYPE_NONE) {
++        res->error(format_error_response("ColBERT encoding requires pooling type 'none'", ERROR_TYPE_INVALID_REQUEST));
++        return res;
++    }
++
++    std::string err;
++    if (!ollama_colbert::ensure_init(ctx_server.model_tgt, err)) {
++        res->error(format_error_response(err, ERROR_TYPE_NOT_SUPPORTED));
++        return res;
++    }
++
++    const json body = json::parse(req.body);
++    std::vector<std::string> inputs;
++    bool is_query = false;
++    if (!ollama_colbert::parse_request(body, inputs, is_query, err)) {
++        res->error(format_error_response(err, ERROR_TYPE_INVALID_REQUEST));
++        return res;
++    }
++
++    std::vector<ollama_colbert::encode_plan> plans(inputs.size());
++    auto & rd = res->rd;
++    {
++        std::vector<server_task> tasks;
++        tasks.reserve(inputs.size());
++        for (size_t i = 0; i < inputs.size(); i++) {
++            if (!ollama_colbert::build_plan(ctx_server.vocab, inputs[i], is_query, plans[i], err)) {
++                res->error(format_error_response(err, ERROR_TYPE_INVALID_REQUEST));
++                return res;
++            }
++
++            server_task task = server_task(SERVER_TASK_TYPE_EMBEDDING);
++            task.id     = rd.get_new_id();
++            task.index  = i;
++            task.tokens = server_tokens(llama_tokens(plans[i].tokens.begin(), plans[i].tokens.end()), false);
++            task.params.res_type = TASK_RESPONSE_TYPE_NONE;
++            tasks.push_back(std::move(task));
++        }
++        rd.post_tasks(std::move(tasks));
++    }
++
++    auto all_results = rd.wait_for_all(req.should_stop);
++    if (all_results.is_terminated) {
++        return res; // connection is closed
++    }
++    if (all_results.error) {
++        res->error(all_results.error->to_json());
++        return res;
++    }
++
++    json data = json::array();
++    for (auto & result : all_results.results) {
++        auto * embd = dynamic_cast<server_task_result_embd *>(result.get());
++        GGML_ASSERT(embd != nullptr);
++        GGML_ASSERT(embd->index < plans.size());
++
++        json item;
++        if (!ollama_colbert::encode_response_item(plans[embd->index], embd->embedding, item, err)) {
++            res->error(format_error_response(err, ERROR_TYPE_SERVER));
++            return res;
++        }
++        item["index"]    = embd->index;
++        item["n_tokens"] = embd->n_tokens;
++        data.push_back(std::move(item));
++    }
++
++    res->ok(json{
++        {"object",     "list"},
++        {"input_type", is_query ? "query" : "document"},
++        {"dim",        ollama_colbert::output_dim()},
++        {"data",       std::move(data)},
++    });
++    return res;
++}
+diff --git a/tools/server/server-context.h b/tools/server/server-context.h
+index 73caff54a..2a9168d85 100644
+--- a/tools/server/server-context.h
++++ b/tools/server/server-context.h
+@@ -121,6 +121,7 @@ struct server_routes {
+     server_http_context::handler_t post_detokenize;
+     server_http_context::handler_t post_embeddings;
+     server_http_context::handler_t post_embeddings_oai;
++    server_http_context::handler_t post_colbert;
+     server_http_context::handler_t post_rerank;
+     server_http_context::handler_t get_lora_adapters;
+     server_http_context::handler_t post_lora_adapters;
+@@ -139,6 +140,7 @@ private:
+     std::unique_ptr<server_res_generator> handle_slots_restore(const server_http_req & req, int id_slot);
+     std::unique_ptr<server_res_generator> handle_slots_erase(const server_http_req &, int id_slot);
+     std::unique_ptr<server_res_generator> handle_embeddings_impl(const server_http_req & req, task_response_type res_type);
++    std::unique_ptr<server_res_generator> handle_colbert_impl(const server_http_req & req);
+ 
+     // using unique_ptr to allow late initialization of const
+     std::unique_ptr<const server_context_meta> meta;
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index 769e80a80..73944b4f5 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -157,6 +157,7 @@ int llama_server(int argc, char ** argv) {
+         routes.post_infill                 = models_routes->proxy_post;
+         routes.post_embeddings             = models_routes->proxy_post;
+         routes.post_embeddings_oai         = models_routes->proxy_post;
++        routes.post_colbert                = models_routes->proxy_post;
+         routes.post_rerank                 = models_routes->proxy_post;
+         routes.post_tokenize               = models_routes->proxy_post;
+         routes.post_detokenize             = models_routes->proxy_post;
+@@ -197,6 +198,7 @@ int llama_server(int argc, char ** argv) {
+     ctx_http.post("/embedding",                ex_wrapper(routes.post_embeddings)); // legacy
+     ctx_http.post("/embeddings",               ex_wrapper(routes.post_embeddings));
+     ctx_http.post("/v1/embeddings",            ex_wrapper(routes.post_embeddings_oai));
++    ctx_http.post("/colbert",                  ex_wrapper(routes.post_colbert)); // ollama: ColBERT multivector encoding
+     ctx_http.post("/rerank",                   ex_wrapper(routes.post_rerank));
+     ctx_http.post("/reranking",                ex_wrapper(routes.post_rerank));
+     ctx_http.post("/v1/rerank",                ex_wrapper(routes.post_rerank));
