@@ -38,6 +38,7 @@ struct encode_plan {
     std::vector<bool>        output_mask; // rows to keep after the forward pass
     int                      output_count = 0;
     bool                     is_query     = false;
+    bool                     truncated    = false; // input exceeded the profile max length
 };
 
 // Idempotent, thread-safe. Parses the ColBERT profile from the model

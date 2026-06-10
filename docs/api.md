@@ -1781,14 +1781,21 @@ targets ColBERT / ModernColBERT models, which are converted with
 a single pooled vector.
 
 Where [`/api/embed`](#generate-embeddings) returns one dense vector per input,
-`/api/multivectors` returns one variable-length **matrix** per input. Ollama
-serves the encodings verbatim — it does not normalize the rows, crop dimensions,
-or drop tokens. Late interaction (MaxSim) is performed downstream, e.g. by a
-vector database.
+`/api/multivectors` returns one variable-length **matrix** per input. The
+runner applies the model's ColBERT runtime profile end to end: the query or
+document prefix, query `[MASK]` expansion to the profile's fixed length,
+document skiplist and punctuation filtering, the ColBERT projection, and L2
+normalization of every row. Ollama performs no further post-processing — the
+rows are served exactly as encoded. Late interaction (MaxSim) is performed
+downstream, e.g. by a vector database.
 
-This endpoint is local-only and requires a multivector model. Dense models are
-rejected; conversely, `/api/embed`, `/api/embeddings`, and `/v1/embeddings`
-reject multivector models with an error directing you here.
+This endpoint is local-only and requires a multivector model: a GGUF exported
+with `pooling_type=none` that carries a `pg_colbert.profile_json` profile.
+When the Modelfile `FROM` points at such a GGUF, an accompanying
+`<model>.gguf.colbert_proj` projection sidecar is picked up automatically and
+attached to the model. Dense models are rejected; conversely, `/api/embed`,
+`/api/embeddings`, and `/v1/embeddings` reject multivector models with an
+error directing you here.
 
 ### Parameters
 
@@ -1797,16 +1804,24 @@ reject multivector models with an error directing you here.
 
 Advanced parameters:
 
-- `truncate`: truncates the end of each input to fit within context length. Returns error if `false` and context length is exceeded. Defaults to `true`
-- `input_type`: optional hint, one of `query` or `document`. Validated but does not rewrite the input; supply any required prefixes yourself.
-- `include_tokens`: include the input token ids for each item. Defaults to `false`
+- `truncate`: truncates the end of each input to fit within context length. Returns error if `false` and context length is exceeded. Defaults to `true`. Independently of this guard, the runner cuts each input to the profile's `max_length`; either cut sets `truncated` on the item.
+- `input_type`: selects the encoding role, one of `query` or `document` (default `document`). `query` applies the profile's query prefix and expands the input with `[MASK]` tokens to the fixed query length; `document` applies the document prefix and drops skiplist/punctuation positions from the output.
+- `include_tokens`: include the retained token ids for each item — the ids the returned rows correspond to, after the prefix, expansion, and skiplist are applied. Defaults to `false`
 - `encoding_format`: `float` (default) returns the rows in `vectors`; `base64` returns them packed as base64 of row-major little-endian float32 bytes in `data`
 - `options`: additional model parameters listed in the documentation for the [Modelfile](./modelfile.mdx#valid-parameters-and-values)
 - `keep_alive`: controls how long the model will stay loaded into memory following the request (default: `5m`)
 
 The response always includes a `shape` of `[rows, dim]` for each item. `dimension`
 is the row width. `similarity` advertises how to compare the encodings
-(`max_sim` over the `dot` metric).
+(`max_sim` over the `dot` metric); the rows are unit-normalized, so `dot` is
+cosine. An item's `truncated` field reports that its input was cut, by either
+the context-length guard or the profile's `max_length`.
+
+> [!NOTE]
+> Query encoding uses llama.cpp's full non-causal attention, so content tokens
+> attend to the `[MASK]` expansion tokens. Profiles trained with
+> `attend_to_expansion_tokens=false` (PyLate default) are therefore
+> approximated, not bit-exact; document encoding is unaffected.
 
 > [!NOTE]
 > `include_token_text` is not yet implemented and is rejected if set.
@@ -1868,7 +1883,8 @@ curl http://localhost:11434/api/multivectors -d '{
 }'
 ```
 
-Each `data` item additionally includes a `tokens` array of input token ids.
+Each `data` item additionally includes a `tokens` array of the retained token
+ids, aligned row-for-row with `vectors`.
 
 #### Request (base64 encoding)
 

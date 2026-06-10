@@ -102,10 +102,13 @@ type MultiVectorOptions struct {
 // produced by a pooling=none (ColBERT/ModernColBERT) model. Vectors holds one
 // projected, L2-normalized row per retained token; Dimension is the width of
 // each row; Tokens lists the retained token ids aligned with Vectors.
+// Truncated reports that the input exceeded the model profile's maximum
+// length and was cut to fit.
 type MultiVectorResult struct {
 	Vectors   [][]float32
 	Dimension int
 	Tokens    []int32
+	Truncated bool
 }
 
 // LoadModel will load a model from disk. The model must be in the GGML format.

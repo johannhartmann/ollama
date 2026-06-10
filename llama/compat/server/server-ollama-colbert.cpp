@@ -380,6 +380,7 @@ bool build_plan(const llama_vocab * vocab,
     plan.tokens.resize(n);
     if (max_plan > 0 && (int32_t) plan.tokens.size() > max_plan) {
         plan.tokens.resize(max_plan);
+        plan.truncated = true;
     }
 
     if (is_query && (int32_t) plan.tokens.size() < pad_to) {
@@ -471,6 +472,7 @@ bool encode_response_item(const encode_plan & plan,
     item = ordered_json{
         {"tokens",    std::move(tokens)},
         {"embedding", std::move(embedding)},
+        {"truncated", plan.truncated},
     };
     return true;
 }

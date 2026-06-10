@@ -705,6 +705,36 @@ func hasLegacyQwenMTPDraft(arch string, tensors []*ggml.Tensor) bool {
 	}
 }
 
+// colbertMaxPlanTokens returns the longest token plan a ColBERT model can
+// produce — the larger of the query pad-to length and the document maximum
+// length from the model's pg_colbert.profile_json metadata — or 0 when the
+// model carries no usable ColBERT profile.
+func colbertMaxPlanTokens(kv ggml.KV) int {
+	raw, ok := kv["pg_colbert.profile_json"].(string)
+	if !ok || raw == "" {
+		return 0
+	}
+
+	var profile struct {
+		Query struct {
+			MaxLength int  `json:"max_length"`
+			PadTo     *int `json:"pad_to"`
+		} `json:"query"`
+		Document struct {
+			MaxLength int `json:"max_length"`
+		} `json:"document"`
+	}
+	if err := json.Unmarshal([]byte(raw), &profile); err != nil {
+		return 0
+	}
+
+	n := max(profile.Query.MaxLength, profile.Document.MaxLength)
+	if profile.Query.PadTo != nil {
+		n = max(n, *profile.Query.PadTo)
+	}
+	return n
+}
+
 // NewLlamaServerRunner creates a new llama-server runner that wraps the upstream llama-server binary.
 func NewLlamaServerRunner(
 	gpus []ml.DeviceInfo,
@@ -2303,6 +2333,7 @@ func (s *llamaServerRunner) MultiVector(ctx context.Context, input string, opts 
 			NTokens   int         `json:"n_tokens"`
 			Tokens    []int32     `json:"tokens"`
 			Embedding [][]float32 `json:"embedding"`
+			Truncated bool        `json:"truncated"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &colbertResp); err != nil {
@@ -2327,6 +2358,7 @@ func (s *llamaServerRunner) MultiVector(ctx context.Context, input string, opts 
 		Vectors:   item.Embedding,
 		Dimension: colbertResp.Dim,
 		Tokens:    item.Tokens,
+		Truncated: item.Truncated,
 	}, promptTokens, nil
 }
 

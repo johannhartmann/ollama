@@ -176,13 +176,11 @@ func isPoolingRank(kv ggml.KV) bool {
 // colbertProfile decodes an optional ColBERT profile embedded in the model's
 // GGUF metadata under "pg_colbert.profile_json". The raw string is already
 // surfaced verbatim through /api/show's model_info; this helper decodes it for
-// callers that want structured access (e.g. future query/document prefix
-// handling). It returns nil when the key is absent, empty, or not valid JSON —
-// a malformed profile must never block model use, so the error is only logged.
-//
-// Note: this does not rewrite input text. The MVP validates input_type but
-// leaves the input unchanged; callers supply any required query/document
-// prefixes themselves.
+// callers that want structured access. The profile itself is applied by
+// llama-server's /colbert endpoint (prefixes, query expansion, skiplist,
+// projection); on the Go side it is informational. It returns nil when the
+// key is absent, empty, or not valid JSON — a malformed profile must never
+// block model use, so the error is only logged.
 func colbertProfile(kv ggml.KV) map[string]any {
 	raw, ok := kv["pg_colbert.profile_json"]
 	if !ok {
@@ -417,7 +415,9 @@ func (s *Server) MultiVectorHandler(c *gin.Context) {
 				}
 			}
 
-			item, err := newMultiVectorData(i, result.Vectors, reportTokens, truncated, req.EncodingFormat)
+			// Truncation can happen on either side: the context-length guard
+			// above, or the runner cutting the plan to the profile max length.
+			item, err := newMultiVectorData(i, result.Vectors, reportTokens, truncated || result.Truncated, req.EncodingFormat)
 			if err != nil {
 				return err
 			}
