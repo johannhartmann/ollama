@@ -107,6 +107,11 @@ func (mockRunner) Tokenize(_ context.Context, s string) (tokens []int, err error
 	return
 }
 
+// Detokenize inverts the mock Tokenize: one whitespace-separated word per token.
+func (mockRunner) Detokenize(_ context.Context, tokens []int) (string, error) {
+	return strings.TrimSpace(strings.Repeat("w ", len(tokens))), nil
+}
+
 func (mockRunner) Ping(_ context.Context) error { return nil }
 
 func (m mockRunner) ContextLength() int { return m.contextLength }
