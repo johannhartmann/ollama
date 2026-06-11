@@ -46,6 +46,16 @@ func TestParseMultiVectorEmbeddings(t *testing.T) {
 			wantErr: "did not return token embeddings",
 		},
 		{
+			name:    "wrong index",
+			body:    `[{"index":1,"embedding":[[1.0,2.0]]}]`,
+			wantErr: "index 1, expected 0",
+		},
+		{
+			name:    "zero-dimension rows",
+			body:    `[{"index":0,"embedding":[[],[]]}]`,
+			wantErr: "zero-dimension token embeddings",
+		},
+		{
 			name:    "ragged rows",
 			body:    `[{"index":0,"embedding":[[1.0,2.0],[3.0]]}]`,
 			wantErr: "ragged token embeddings",

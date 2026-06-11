@@ -2088,7 +2088,7 @@ func TestNormalizeEmbeddingError(t *testing.T) {
 			statusCode: http.StatusInternalServerError,
 			body:       `{"error":{"code":500,"message":"input (103 tokens) is too large to process. increase the physical batch size (current batch size: 30)"}}`,
 			wantStatus: http.StatusBadRequest,
-			wantMsg:    "the input length exceeds the context length",
+			wantMsg:    "the input length exceeds the batch size; increase num_batch",
 		},
 		{
 			name:       "context length string error",

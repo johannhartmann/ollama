@@ -2312,12 +2312,18 @@ func parseMultiVectorEmbeddings(body []byte) (MultiVectorResult, int, error) {
 	if len(results) != 1 {
 		return MultiVectorResult{}, 0, fmt.Errorf("embeddings response contained %d results for one input", len(results))
 	}
+	if results[0].Index != 0 {
+		return MultiVectorResult{}, 0, fmt.Errorf("embeddings response item has index %d, expected 0", results[0].Index)
+	}
 
 	rows := results[0].Embedding
 	if len(rows) == 0 {
 		return MultiVectorResult{}, 0, errors.New("model did not return token embeddings (is pooling none?)")
 	}
 	dim := len(rows[0])
+	if dim == 0 {
+		return MultiVectorResult{}, 0, errors.New("model returned zero-dimension token embeddings")
+	}
 	for i, row := range rows {
 		if len(row) != dim {
 			return MultiVectorResult{}, 0, fmt.Errorf("ragged token embeddings: row %d has dim %d, expected %d", i, len(row), dim)
