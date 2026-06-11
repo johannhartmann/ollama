@@ -106,4 +106,3 @@ func rejectMultivectorModel(name string) error {
 	}
 	return nil
 }
-

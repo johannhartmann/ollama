@@ -237,3 +237,52 @@ func createListCacheModel(t *testing.T, name string, kv map[string]any, tmpl str
 		t.Fatalf("create model status = %d, want 200: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestReadModelListGGUFPoolingCapabilities(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	setTestHome(t, t.TempDir())
+
+	cases := []struct {
+		name    string
+		kv      map[string]any
+		want    model.Capability
+		notWant []model.Capability
+	}{
+		{
+			name:    "pooling none is multivector",
+			kv:      map[string]any{"test.pooling_type": uint32(0)},
+			want:    model.CapabilityMultivector,
+			notWant: []model.Capability{model.CapabilityEmbedding, model.CapabilityCompletion},
+		},
+		{
+			name:    "pooling mean is embedding",
+			kv:      map[string]any{"test.pooling_type": uint32(1)},
+			want:    model.CapabilityEmbedding,
+			notWant: []model.Capability{model.CapabilityMultivector, model.CapabilityCompletion},
+		},
+		{
+			name:    "no pooling is completion",
+			kv:      map[string]any{},
+			want:    model.CapabilityCompletion,
+			notWant: []model.Capability{model.CapabilityMultivector, model.CapabilityEmbedding},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path, _ := createBinFile(t, tc.kv, nil)
+			info, err := readModelListGGUF(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Contains(info.Capabilities, tc.want) {
+				t.Fatalf("capabilities = %v, want %s", info.Capabilities, tc.want)
+			}
+			for _, capability := range tc.notWant {
+				if slices.Contains(info.Capabilities, capability) {
+					t.Fatalf("capabilities = %v, must not contain %s", info.Capabilities, capability)
+				}
+			}
+		})
+	}
+}

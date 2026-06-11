@@ -215,3 +215,20 @@ func TestEmbedHandlerRejectsMultiVectorModel(t *testing.T) {
 		t.Fatalf("expected redirect to /api/multivectors, got %s", w.Body.String())
 	}
 }
+
+func TestEmbeddingsHandlerRejectsMultiVectorModel(t *testing.T) {
+	t.Setenv("OLLAMA_CONTEXT_LENGTH", "2048")
+	gin.SetMode(gin.TestMode)
+
+	mock := mockRunner{}
+	s := newServerWithMockRunner(t, &mock)
+	createMinimalGGUFModel(t, s, "colbert", multivectorKV(), "", nil)
+
+	w := createRequest(t, s.EmbeddingsHandler, api.EmbeddingRequest{Model: "colbert", Prompt: "hello"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 from /api/embeddings for pooling=none model, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "/api/multivectors") {
+		t.Fatalf("expected redirect to /api/multivectors, got %s", w.Body.String())
+	}
+}
